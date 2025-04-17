@@ -13,7 +13,7 @@ import (
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose]
+  padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-zip]
   padlock decode <inputDir> <outputDir> [-clear] [-verbose]
 
 Options:
@@ -23,6 +23,7 @@ Options:
   -clear            Clear output directory if not empty
   -chunk SIZE       Maximum candidate block size in bytes (default ~2MB)
   -verbose          Enable detailed (debug/trace) output
+  -zip              Create zip files for each collection instead of directories
 `)
 	os.Exit(1)
 }
@@ -124,6 +125,7 @@ func main() {
 		clearVal := fs.Bool("clear", false, "clear output directory if not empty")
 		chunkVal := fs.Int("chunk", 2*1024*1024, "maximum candidate block size in bytes (default ~2MB)")
 		verboseVal := fs.Bool("verbose", false, "enable detailed (trace/debug) output")
+		zipVal := fs.Bool("zip", false, "create zip files for each collection instead of directories")
 		fs.Parse(os.Args[4:])
 
 		if *nVal < 2 || *nVal > 26 {
@@ -157,6 +159,7 @@ func main() {
 			ClearIfNotEmpty: *clearVal,
 			Verbose:         *verboseVal,
 			Compression:     padlock.DefaultCompressionMode,
+			ZipCollections:  *zipVal,
 		}
 
 		if err := padlock.EncodeData(cfg); err != nil {
@@ -178,8 +181,9 @@ func main() {
 			}
 			log.Fatalf("Error: Cannot access input directory %s: %v", inputDir, err)
 		}
+		// Input must be a directory for decoding
 		if !inputStat.IsDir() {
-			log.Fatalf("Error: Input path is not a directory: %s", inputDir)
+			log.Fatalf("Error: Input path is not a directory: %s. The input should be a directory containing collection subdirectories or ZIP files.", inputDir)
 		}
 
 		fs := flag.NewFlagSet("decode", flag.ExitOnError)

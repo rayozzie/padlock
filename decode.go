@@ -2,6 +2,7 @@ package padlock
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
@@ -25,6 +26,64 @@ type DecodeConfig struct {
 	Compression CompressionMode // Must match the encoding mode.
 }
 
+// Helper function to extract a collection from a zip file to a temporary directory
+func extractZipCollection(zipPath string, tempDir string, verbose bool) (string, error) {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open zip file %s: %w", zipPath, err)
+	}
+	defer r.Close()
+
+	// Create a unique collection directory in the temp dir
+	collectionDir := filepath.Join(tempDir, filepath.Base(zipPath))
+	if strings.HasSuffix(collectionDir, ".zip") {
+		collectionDir = collectionDir[:len(collectionDir)-4]
+	}
+	
+	if err := os.MkdirAll(collectionDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create temp collection directory: %w", err)
+	}
+
+	// Extract all files
+	for _, f := range r.File {
+		fpath := filepath.Join(collectionDir, f.Name)
+
+		// Ensure the file's directory exists
+		if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+			return "", fmt.Errorf("failed to create directory for %s: %w", fpath, err)
+		}
+
+		// Skip if directory
+		if f.FileInfo().IsDir() {
+			continue
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		if err != nil {
+			return "", fmt.Errorf("failed to create output file %s: %w", fpath, err)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			outFile.Close()
+			return "", fmt.Errorf("failed to open zip entry: %w", err)
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to copy zip entry content: %w", err)
+		}
+
+		if verbose {
+			log.Printf("DECODE: Extracted %s", f.Name)
+		}
+	}
+
+	return collectionDir, nil
+}
+
 func DecodeData(cfg DecodeConfig) error {
 	start := time.Now()
 	if cfg.Verbose {
@@ -34,22 +93,51 @@ func DecodeData(cfg DecodeConfig) error {
 	if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
+	
+	// Create a temporary directory for extracted zip files
+	tempDir, err := os.MkdirTemp("", "padlock-decode-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Clean up temp directory when done
+	
 	dirs, err := os.ReadDir(cfg.InputDir)
 	if err != nil {
 		return fmt.Errorf("failed to read input directory: %w", err)
 	}
+	
 	var collDirs []string
+	// First check for directories
 	for _, d := range dirs {
 		if d.IsDir() {
 			collDirs = append(collDirs, filepath.Join(cfg.InputDir, d.Name()))
 		}
 	}
+	
+	// Then check for zip files
+	for _, f := range dirs {
+		if !f.IsDir() && strings.HasSuffix(strings.ToLower(f.Name()), ".zip") {
+			zipPath := filepath.Join(cfg.InputDir, f.Name())
+			if cfg.Verbose {
+				log.Printf("DECODE: Found collection zip file: %s", zipPath)
+			}
+			
+			// Extract zip to temp directory
+			extractedDir, err := extractZipCollection(zipPath, tempDir, cfg.Verbose)
+			if err != nil {
+				return fmt.Errorf("failed to extract zip collection %s: %w", zipPath, err)
+			}
+			
+			collDirs = append(collDirs, extractedDir)
+		}
+	}
+	
 	if len(collDirs) == 0 {
-		return fmt.Errorf("no collection subdirectories found in %s", cfg.InputDir)
+		return fmt.Errorf("no collection subdirectories or zip files found in %s", cfg.InputDir)
 	}
 	sort.Strings(collDirs)
 	if cfg.Verbose {
-		log.Printf("DECODE: Available collections (directories): %v", collDirs)
+		log.Printf("DECODE: Available collections (directories/zip files): %v", collDirs)
 	}
 
 	// Use the first collection to determine file naming format.

@@ -2,10 +2,12 @@ package padlock
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,6 +28,7 @@ type EncodeConfig struct {
 	Verbose         bool
 	Formatter       Formatter
 	Compression     CompressionMode // CompressionClear or CompressionGz
+	ZipCollections  bool            // Create zip files instead of directories
 }
 
 // EncodeData performs a single-pass tar → optional compression → chunker → candidate record generation.
@@ -232,6 +235,106 @@ func EncodeData(cfg EncodeConfig) error {
 		}
 	}
 	elapsed := time.Since(start)
+	
+	// Create zip files for each collection if requested
+	if cfg.ZipCollections {
+		log.Printf("Creating zip files for each collection")
+		for i, sd := range subdirs {
+			letter := collectionLetter(i)
+			collName := filepath.Base(sd)
+			zipPath := filepath.Join(cfg.OutputDir, collName+".zip")
+			
+			if cfg.Verbose {
+				log.Printf("ENCODE: Creating zip file for collection %c: %s", letter, zipPath)
+			}
+			
+			// Create zip file
+			zipFile, err := os.Create(zipPath)
+			if err != nil {
+				return fmt.Errorf("failed to create zip file %s: %w", zipPath, err)
+			}
+			
+			zw := zip.NewWriter(zipFile)
+			
+			// Walk through collection directory and add files to zip
+			err = filepath.Walk(sd, func(path string, info fs.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				
+				// Skip the directory itself
+				if info.IsDir() {
+					return nil
+				}
+				
+				// Create a relative path for the zip entry
+				rel, err := filepath.Rel(sd, path)
+				if err != nil {
+					return fmt.Errorf("failed to get relative path: %w", err)
+				}
+				
+				// Create a zip file header
+				header, err := zip.FileInfoHeader(info)
+				if err != nil {
+					return fmt.Errorf("failed to create zip header: %w", err)
+				}
+				header.Name = rel
+				header.Method = zip.Deflate
+				
+				// Create the file in the zip
+				writer, err := zw.CreateHeader(header)
+				if err != nil {
+					return fmt.Errorf("failed to create zip entry: %w", err)
+				}
+				
+				// Open the file to read its content
+				file, err := os.Open(path)
+				if err != nil {
+					return fmt.Errorf("failed to open file %s: %w", path, err)
+				}
+				defer file.Close()
+				
+				// Copy the file content to the zip entry
+				_, err = io.Copy(writer, file)
+				if err != nil {
+					return fmt.Errorf("failed to write file to zip: %w", err)
+				}
+				
+				if cfg.Verbose {
+					log.Printf("ENCODE: Added %s to zip file", rel)
+				}
+				
+				return nil
+			})
+			
+			if err != nil {
+				zw.Close()
+				zipFile.Close()
+				return fmt.Errorf("error creating zip for collection %c: %w", letter, err)
+			}
+			
+			// Close the zip writer and file
+			if err := zw.Close(); err != nil {
+				zipFile.Close()
+				return fmt.Errorf("failed to close zip writer: %w", err)
+			}
+			if err := zipFile.Close(); err != nil {
+				return fmt.Errorf("failed to close zip file: %w", err)
+			}
+			
+			// Remove the original directory
+			if err := os.RemoveAll(sd); err != nil {
+				return fmt.Errorf("failed to remove original collection directory after zipping: %w", err)
+			}
+			
+			if cfg.Verbose {
+				log.Printf("ENCODE: Successfully created zip file for collection %c and removed original directory", letter)
+			}
+		}
+		log.Printf("Created zip files for all collections")
+	}
+	
+	elapsed = time.Since(start)
 	log.Printf("Encode complete (%s) -copies %d -required %d -format %s", elapsed, cfg.N, cfg.K, cfg.Format)
 	return nil
 }
