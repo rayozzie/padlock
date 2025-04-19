@@ -1,3 +1,34 @@
+// Package main provides the command-line interface for the padlock cryptographic system.
+//
+// Padlock is a K-of-N threshold one-time-pad cryptographic system that provides
+// information-theoretic security. This means that:
+// - Data is split into N collections (shares)
+// - Any K collections can reconstruct the original data
+// - K-1 or fewer collections reveal absolutely nothing about the original data
+// - Security depends entirely on the quality of randomness used
+//
+// The command-line interface supports two main operations:
+// 1. encode: Split input data across N collections with K-of-N threshold security
+// 2. decode: Reconstruct original data using K or more collections
+//
+// Usage examples:
+//
+//   # Create 3 collections where any 2 can reconstruct the data, in PNG format
+//   padlock encode /path/to/input /path/to/output -copies 3 -required 2 -format png
+//
+//   # Reconstruct the original data from K or more collections
+//   padlock decode /path/to/collections /path/to/output
+//
+//   # Enable verbose logging for debugging
+//   padlock encode /path/to/input /path/to/output -verbose
+//
+//   # Create ZIP archives for each collection instead of directories
+//   padlock encode /path/to/input /path/to/output -zip
+//
+// Security considerations:
+// - Never reuse the same collections for different data (violates one-time pad security)
+// - Keep collections physically separated to reduce risk of compromise
+// - For maximum security, distribute collections through different channels/locations
 package main
 
 import (
@@ -8,15 +39,28 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rayozzie/padlock/pkg/pad"
 	"github.com/rayozzie/padlock/pkg/padlock"
-	"github.com/rayozzie/padlock/pkg/rng"
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
+// usage prints the command-line help information and exits.
+//
+// This function displays usage instructions for the padlock command-line tool,
+// explaining the available commands, their parameters, and options.
+// After displaying the help text, it exits with status code 1.
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
   padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-zip]
   padlock decode <inputDir> <outputDir> [-clear] [-verbose]
+
+Commands:
+  encode            Split input data into N collections with K-of-N threshold security
+  decode            Reconstruct original data from K or more collections
+
+Parameters:
+  <inputDir>        Source directory containing data to encode or collections to decode
+  <outputDir>       Destination directory for encoded collections or decoded data
 
 Options:
   -copies N         Number of collections to create (must be between 2 and 26, default: 2)
@@ -26,11 +70,33 @@ Options:
   -chunk SIZE       Maximum candidate block size in bytes (default ~2MB)
   -verbose          Enable detailed (debug/trace) output
   -zip              Create zip files for each collection instead of directories
+
+Examples:
+  padlock encode ~/Documents/secret ~/Collections -copies 5 -required 3 -format png -zip
+  padlock decode ~/Collections/subset ~/Restored -clear
 `)
 	os.Exit(1)
 }
 
+// main is the entry point for the padlock command-line tool.
+//
+// This function:
+// 1. Parses command-line arguments and flags
+// 2. Validates inputs and options
+// 3. Creates appropriate configuration
+// 4. Sets up logging and context
+// 5. Executes the requested operation (encode or decode)
+//
+// The two main commands supported are:
+// - encode: Splits input data across N collections with K-of-N threshold security
+// - decode: Reconstructs original data using K or more collections
+//
+// Error handling:
+// - Invalid parameters or flags trigger usage display
+// - File access errors are reported with specific messages
+// - Operational errors during encoding/decoding are reported with context
 func main() {
+	// Ensure a command is provided
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -100,7 +166,7 @@ func main() {
 			K:               *reqVal,
 			Format:          format,
 			ChunkSize:       *chunkVal,
-			RNG:             rng.NewDefaultRNG(),
+			RNG:             pad.NewDefaultRNG(),
 			ClearIfNotEmpty: *clearVal,
 			Verbose:         *verboseVal,
 			Compression:     padlock.CompressionGzip,
@@ -152,7 +218,7 @@ func main() {
 		cfg := padlock.DecodeConfig{
 			InputDir:        inputDir,
 			OutputDir:       outputDir,
-			RNG:             rng.NewDefaultRNG(),
+			RNG:             pad.NewDefaultRNG(),
 			Verbose:         *verboseVal,
 			Compression:     padlock.CompressionGzip,
 			ClearIfNotEmpty: *clearVal,

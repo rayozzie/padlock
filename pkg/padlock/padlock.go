@@ -9,7 +9,6 @@ import (
 
 	"github.com/rayozzie/padlock/pkg/file"
 	"github.com/rayozzie/padlock/pkg/pad"
-	"github.com/rayozzie/padlock/pkg/rng"
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
@@ -39,7 +38,7 @@ type EncodeConfig struct {
 	K               int
 	Format          Format
 	ChunkSize       int
-	RNG             rng.RNG
+	RNG             pad.RNG
 	ClearIfNotEmpty bool
 	Verbose         bool
 	Compression     Compression
@@ -50,7 +49,7 @@ type EncodeConfig struct {
 type DecodeConfig struct {
 	InputDir        string
 	OutputDir       string
-	RNG             rng.RNG
+	RNG             pad.RNG
 	Verbose         bool
 	Compression     Compression
 	ClearIfNotEmpty bool

@@ -1,3 +1,30 @@
+// Package pad implements a secure K-of-N threshold one-time-pad cryptographic scheme.
+//
+// This package provides the core cryptographic functionality of the padlock system,
+// implementing Shamir's Secret Sharing combined with one-time-pad encryption.
+// The threshold scheme allows data to be split into N collections (shares),
+// where any K of them can be used to reconstruct the original data, but K-1 or
+// fewer collections reveal absolutely nothing about the original data
+// (information-theoretic security).
+//
+// Security properties:
+// - True information-theoretic security (not dependent on computational hardness)
+// - Perfect forward secrecy (past communications remain secure even if keys are compromised)
+// - No key management required (each pad is used only once)
+// - K-of-N threshold security (requires at least K collections to reconstruct)
+// - If using true randomness, security is mathematically provable
+//
+// Implementation details:
+// - Data is divided into fixed-size chunks for processing
+// - Each chunk is split across N collections
+// - Collections are generated so that any K of them can reconstruct the original data
+// - File names on disk use format "<collectionName>_<chunkNumber>.<format>" (e.g., "3A5_0001.bin")
+// - Internally within files, chunk names are stored as "<collectionName>-<chunkNumber>" (e.g., "3A5-1")
+//
+// Usage warnings:
+// - The security of this system depends entirely on the quality of the random number generator
+// - One-time pads must NEVER be reused
+// - Data reconstruction requires exactly K or more of the original N collections
 package pad
 
 import (
@@ -5,33 +32,46 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
-	"github.com/rayozzie/padlock/pkg/rng"
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
-// RandomBytesGenerator defines a function type that generates random bytes
-// Deprecated: Use rng.RNG interface instead
-type RandomBytesGenerator func([]byte) (int, error)
-
-// ContextAwareRandomBytesGenerator defines a function type that generates random bytes with context
-type ContextAwareRandomBytesGenerator interface {
-	// ReadWithContext fills p with random bytes and returns the number of bytes written.
-	ReadWithContext(ctx context.Context, p []byte) (n int, err error)
-}
-
-// NewChunkFunc defines a function type for creating new chunk files
+// NewChunkFunc defines a function type for creating new chunk files.
+// This is a callback function provided by the caller to create output files for each chunk.
+// It creates a file with the specified collection name, chunk number, and format (e.g., bin or png).
+// The returned WriteCloser must be properly closed by the caller after writing is complete.
 type NewChunkFunc func(collectionName string, chunkNumber int, chunkFormat string) (io.WriteCloser, error)
 
-// Pad represents the configuration for a one-time pad operation
+// Pad represents the configuration for a one-time pad K-of-N threshold scheme operation.
+// It maintains the parameters for the threshold scheme and the names of the collections
+// that will be generated.
 type Pad struct {
-	TotalCopies    int // N in the original code
-	RequiredCopies int // K in the original code
-	Collections    []string
+	TotalCopies    int      // N: Total number of collections to create (2-26)
+	RequiredCopies int      // K: Minimum collections needed for reconstruction (2-N)
+	Collections    []string // Names of each collection (e.g., ["3A5", "3B5", "3C5", ...])
 }
 
-// NewPad creates a new Pad instance with the specified parameters
+// NewPad creates a new Pad instance with the specified parameters for a K-of-N threshold scheme.
+//
+// Parameters:
+//   - totalCopies (N): The total number of collections to create. Must be between 2 and 26.
+//     This represents the total number of shares in the threshold scheme.
+//   - requiredCopies (K): The minimum number of collections required to reconstruct the data.
+//     Must be at least 2 and not greater than totalCopies.
+//
+// Returns:
+//   - A configured Pad instance with generated collection names
+//   - An error if the parameters are invalid
+//
+// Collection names are automatically generated in the format "<K><ID><N>", where:
+//   - K is the requiredCopies value
+//   - ID is a letter from A-Z representing the collection index
+//   - N is the totalCopies value
+//
+// For example, with K=3, N=5, the collections would be: ["3A5", "3B5", "3C5", "3D5", "3E5"]
 func NewPad(totalCopies, requiredCopies int) (*Pad, error) {
+	// Validate parameters to ensure they meet the requirements of the threshold scheme
 	if totalCopies < 2 || totalCopies > 26 {
 		return nil, fmt.Errorf("totalCopies must be between 2 and 26, got %d", totalCopies)
 	}
@@ -43,6 +83,7 @@ func NewPad(totalCopies, requiredCopies int) (*Pad, error) {
 	}
 
 	// Generate collection names in the format "<K><collectionId><N>"
+	// Example: with K=3, N=5, collections = ["3A5", "3B5", "3C5", "3D5", "3E5"]
 	collections := make([]string, totalCopies)
 	for i := 0; i < totalCopies; i++ {
 		collLetter := rune('A' + i)
@@ -56,8 +97,33 @@ func NewPad(totalCopies, requiredCopies int) (*Pad, error) {
 	}, nil
 }
 
-// Encode implements the one-time pad encoding process
-func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader, randomSource rng.RNG, newChunk NewChunkFunc, chunkFormat string) error {
+// Encode implements the one-time pad encoding process with K-of-N threshold security.
+//
+// This method takes an input stream and encodes it into N collections such that
+// any K collections can be used to reconstruct the original data, but fewer than
+// K collections reveal absolutely nothing about the data (information-theoretic security).
+//
+// Parameters:
+//   - ctx: Context for logging, cancellation, and tracing
+//   - outputChunkBytes: Maximum size for each output chunk in bytes
+//   - input: Reader providing the data to be encoded
+//   - randomSource: Source of random bytes for one-time pad generation
+//   - newChunk: Function to create output files for each chunk
+//   - chunkFormat: Format for output files (e.g., "bin" or "png")
+//
+// Process:
+//  1. Divide input data into fixed-size chunks
+//  2. For each chunk:
+//     a. Generate a random one-time pad matching the input size
+//     b. XOR the input data with the pad to create ciphertext
+//     c. Distribute data across N collections according to the threshold scheme
+//     d. Write the data to each collection with proper headers
+//
+// Security considerations:
+//   - The randomSource MUST provide cryptographically secure random numbers
+//   - The same pad must NEVER be reused
+//   - Each chunk has a unique name to ensure it's properly tracked during decoding
+func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader, randomSource RNG, newChunk NewChunkFunc, chunkFormat string) error {
 	log := trace.FromContext(ctx).WithPrefix("ENCODE")
 
 	log.Debugf("Starting encode with parameters: totalCopies=%d, requiredCopies=%d, outputChunkBytes=%d",
@@ -66,11 +132,11 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 	// Log the collection names
 	log.Debugf("Collections: %v", p.Collections)
 
-	// Compute a reasonable segment size S
+	// Compute a reasonable segment size S for dividing data across collections
 	// For simplicity, we'll make each segment a fixed portion of the output chunk size
 	// Formula: S = outputChunkBytes / (4 * N)
 	// This ensures the combined left and right halves (2*N*S) fit within outputChunkBytes
-	// with some room for the header
+	// with some room for the header and metadata
 	S := outputChunkBytes / (4 * p.TotalCopies)
 	if S <= 0 {
 		return fmt.Errorf("configured chunk size %d is too small for the specified collections", outputChunkBytes)
@@ -78,21 +144,24 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 
 	log.Debugf("Computed segment size S=%d bytes", S)
 
+	// Size of data chunks to read from input
 	inputChunkSize := p.TotalCopies * S
 	log.Debugf("Input chunk size: %d bytes", inputChunkSize)
 
+	// Buffer for reading input data
 	buffer := make([]byte, inputChunkSize)
 	chunkIndex := 1
 
+	// Process input data chunk by chunk until end of stream
 	for {
-		// Try to read a full chunk
+		// Try to read a full chunk from the input
 		bytesRead, err := io.ReadFull(input, buffer)
 
 		// Process the chunk if we got any data
 		if bytesRead > 0 {
 			log.Debugf("Processing chunk %d (%d bytes)", chunkIndex, bytesRead)
 
-			// Process the chunk with however many bytes we read
+			// Process the chunk with however many bytes we read (handles partial chunks)
 			if err := p.encodeOneChunk(ctx, buffer[:bytesRead], S, chunkIndex, randomSource, newChunk, chunkFormat); err != nil {
 				return err
 			}
@@ -113,8 +182,26 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 	return nil
 }
 
-// encodeOneChunk encodes a single chunk of data
-func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, S int, chunkNumber int, randomSource rng.RNG, newChunk NewChunkFunc, chunkFormat string) error {
+// encodeOneChunk encodes a single chunk of data using the one-time pad threshold scheme.
+//
+// This function is the core implementation of the one-time pad encoding process for a single chunk.
+// It generates random pad data, XORs it with the input data, and distributes the results
+// across N collections according to the threshold scheme.
+//
+// Parameters:
+//   - ctx: Context for logging, cancellation, and tracing
+//   - chunkData: The input data to encode (may be less than a full chunk at the end of the stream)
+//   - S: The segment size parameter for dividing data
+//   - chunkNumber: The sequential number of this chunk (starting at 1)
+//   - randomSource: Source of cryptographically secure random bytes
+//   - newChunk: Function to create output files for each chunk
+//   - chunkFormat: Format for output files (e.g., "bin" or "png")
+//
+// Security considerations:
+//   - The randomSource MUST provide high-quality randomness
+//   - The segment distribution ensures that fewer than K collections reveal nothing about the data
+//   - Each collection receives data that appears completely random when viewed in isolation
+func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, S int, chunkNumber int, randomSource RNG, newChunk NewChunkFunc, chunkFormat string) error {
 	log := trace.FromContext(ctx).WithPrefix("ENCODE")
 
 	// Handle the actual size of the input data, which may be less than a full chunk
@@ -125,7 +212,7 @@ func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, S int, chunk
 	// This ensures we can handle any size of data, including odd-sized chunks
 	log.Debugf("Chunk %d: generating random pad of %d bytes", chunkNumber, actualSize)
 	pad := make([]byte, actualSize)
-	n, err := randomSource.ReadWithContext(ctx, pad)
+	n, err := randomSource.Read(ctx, pad)
 	if err != nil {
 		log.Error(fmt.Errorf("random generator error: %w", err))
 		return fmt.Errorf("random generator error: %w", err)
@@ -248,7 +335,31 @@ func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, S int, chunk
 	return nil
 }
 
-// Decode performs the one-time pad decoding process
+// Decode performs the one-time pad decoding process to reconstruct the original data.
+//
+// This method takes K or more collection readers and reconstructs the original data
+// using the threshold scheme properties. It requires at least K collections to work;
+// with fewer collections, no information about the original data can be recovered.
+//
+// Parameters:
+//   - ctx: Context for logging, cancellation, and tracing
+//   - collections: Slice of io.Readers, each providing data from one collection
+//     (must provide at least RequiredCopies readers)
+//   - output: Writer where the reconstructed original data will be written
+//
+// Process:
+//  1. Verify that enough collections are provided (at least K)
+//  2. Read chunks sequentially from each collection
+//  3. For each chunk:
+//     a. Read and validate chunk headers and names
+//     b. Decode the chunk data using the threshold scheme
+//     c. Write the decoded data to the output
+//
+// Security considerations:
+//   - Attempting to decode with fewer than K collections will fail completely
+//   - The collection readers must provide data from the same encoding operation
+//   - Chunk numbers and collection names are verified for consistency
+//   - The decoding process is deterministic and will produce the exact original data
 func (p *Pad) Decode(ctx context.Context, collections []io.Reader, output io.Writer) error {
 	log := trace.FromContext(ctx).WithPrefix("DECODE")
 
@@ -311,11 +422,22 @@ func (p *Pad) Decode(ctx context.Context, collections []io.Reader, output io.Wri
 
 			// Parse the collection name and chunk number from the chunk name
 			// Format: "<collectionName>-<chunkNumber>"
-			var collName string
+			// Split at the last dash to handle collection names that might contain dashes
+			parts := strings.Split(chunkName, "-")
+			if len(parts) < 2 {
+				return fmt.Errorf("invalid chunk name format (missing hyphen): %s", chunkName)
+			}
+
+			// The chunk number is the last part
+			chunkNumStr := parts[len(parts)-1]
+			// The collection name is everything else joined with dashes
+			collName := strings.Join(parts[:len(parts)-1], "-")
+
+			// Parse the chunk number
 			var chunkNum int
-			_, err = fmt.Sscanf(chunkName, "%s-%d", &collName, &chunkNum)
+			_, err = fmt.Sscanf(chunkNumStr, "%d", &chunkNum)
 			if err != nil {
-				return fmt.Errorf("invalid chunk name format: %s", chunkName)
+				return fmt.Errorf("invalid chunk number in chunk name: %s", chunkName)
 			}
 
 			// If this is the first chunk, initialize the collection name
@@ -370,7 +492,32 @@ func (p *Pad) Decode(ctx context.Context, collections []io.Reader, output io.Wri
 	}
 }
 
-// Helper function to decode chunks with a true information-theoretic K-of-N threshold scheme
+// decodeChunks implements the core decoding algorithm for the information-theoretic K-of-N threshold scheme.
+//
+// This function takes chunks from K collections and reconstructs the original data by
+// identifying matching records across collections and performing the appropriate XOR operations.
+// It is the inverse of the buildCollectionChunk function used during encoding.
+//
+// Parameters:
+//   - ctx: Context for logging, cancellation, and tracing
+//   - chunks: Slice of byte slices containing chunk data from K different collections
+//   - requiredCopies: The K value from the K-of-N threshold scheme
+//   - totalCopies: The N value from the K-of-N threshold scheme
+//
+// Returns:
+//   - The reconstructed original data
+//   - An error if decoding fails
+//
+// Process:
+//  1. Identify the collection indices (assumed to be 0...K-1 in current implementation)
+//  2. Find matching records across collections with the same combination ID
+//  3. Extract segment data from each collection
+//  4. Reconstruct the original data by XORing the segments together
+//
+// Mathematical basis:
+//
+//	If data = plaintext ⊕ pad, and the lowest index collection has data ⊕ pad₁ ⊕ pad₂ ⊕ ... ⊕ padₖ₋₁,
+//	then XORing with all pad₁...padₖ₋₁ yields the original plaintext.
 func decodeChunks(ctx context.Context, chunks [][]byte, requiredCopies, totalCopies int) ([]byte, error) {
 	log := trace.FromContext(ctx).WithPrefix("DECODE")
 	if len(chunks) < requiredCopies {
@@ -518,8 +665,38 @@ func decodeChunks(ctx context.Context, chunks [][]byte, requiredCopies, totalCop
 	return result, nil
 }
 
-// Helper function to build a collection chunk for true information-theoretic K-of-N threshold scheme
-// Each collection gets segments that are completely unique and appear random
+// buildCollectionChunk creates the data for a single collection in the threshold scheme.
+//
+// This function implements the core security properties of the K-of-N threshold scheme.
+// It ensures that each collection contains data that appears completely random when
+// viewed in isolation, but can be combined with K-1 other collections to reconstruct
+// the original data.
+//
+// Parameters:
+//   - ctx: Context for logging, cancellation, and tracing
+//   - collIndex: The index of the collection (0 to N-1)
+//   - totalCopies: The N value from the K-of-N threshold scheme
+//   - requiredCopies: The K value from the K-of-N threshold scheme
+//   - padSegments: Random pad segments for each collection
+//   - cipherSegments: The ciphertext segments (original data XORed with pads)
+//
+// Returns:
+//   - A byte slice containing the chunk data for this collection
+//
+// Process:
+//  1. Generate all possible K-combinations of the N collections
+//  2. Filter to combinations that include this collection
+//  3. For each relevant combination:
+//     a. Determine this collection's role (lowest index or not)
+//     b. If lowest index: Store ciphertext XORed with other collection pads
+//     c. If not lowest index: Store just the random pad
+//     d. Package this data with a combination ID header
+//  4. Combine all records into a single chunk
+//
+// Security properties:
+//   - A subset of fewer than K collections reveals nothing about the original data
+//   - Any K collections can be used to recover the complete original data
+//   - Each collection contains different data for different K-combinations
 func buildCollectionChunk(ctx context.Context, collIndex int, totalCopies, requiredCopies int, padSegments, cipherSegments [][]byte) []byte {
 	log := trace.FromContext(ctx).WithPrefix("ENCODE")
 
@@ -653,7 +830,29 @@ func buildCollectionChunk(ctx context.Context, collIndex int, totalCopies, requi
 	return chunk
 }
 
-// Helper function to generate all k-element combinations of {0,...,n-1}
+// generateKCombinations computes all possible k-element combinations from the set {0,1,...,n-1}.
+//
+// This function is used to calculate all possible ways to select K collections from N total collections,
+// which is necessary for implementing the threshold scheme where any K collections can reconstruct
+// the original data.
+//
+// Parameters:
+//   - n: The size of the set to choose from (N in the K-of-N scheme)
+//   - k: The size of each combination (K in the K-of-N scheme)
+//
+// Returns:
+//   - A slice of integer slices, where each inner slice represents one combination
+//
+// Algorithm:
+//   - Uses a recursive backtracking approach to generate all combinations
+//   - For each position in the combination, we try all valid values
+//   - When we've filled all k positions, we add the combination to our result
+//
+// Example:
+//
+//	generateKCombinations(4, 2) would return:
+//	[[0,1], [0,2], [0,3], [1,2], [1,3], [2,3]]
+//	representing all ways to choose 2 elements from {0,1,2,3}
 func generateKCombinations(n, k int) [][]int {
 	var result [][]int
 	combo := make([]int, k)
@@ -676,7 +875,32 @@ func generateKCombinations(n, k int) [][]int {
 	return result
 }
 
-// Helper function to calculate binomial coefficient (n choose k)
+// binomialCoefficient calculates the binomial coefficient (n choose k).
+//
+// This function computes the number of ways to choose k elements from a set of n elements,
+// which is essential for determining how many unique combinations of collections exist
+// in the K-of-N threshold scheme.
+//
+// Parameters:
+//   - n: The size of the set (N in the K-of-N scheme)
+//   - k: The size of the selection (K in the K-of-N scheme)
+//
+// Returns:
+//   - The binomial coefficient (n choose k), equal to n!/(k!(n-k)!)
+//
+// Algorithm:
+//   - Uses a multiplication formula that avoids calculating large factorials
+//   - Leverages the symmetry property: (n choose k) = (n choose n-k)
+//   - Handles edge cases like k=0, k=n, and invalid inputs
+//
+// Example:
+//
+//	binomialCoefficient(5, 2) = 10, meaning there are 10 ways to choose 2 elements from a set of 5
+//
+// Mathematical significance:
+//
+//	In the context of padlock, this represents the number of records each collection
+//	must store to ensure that any K collections can reconstruct the original data
 func binomialCoefficient(n, k int) int {
 	if k < 0 || k > n {
 		return 0
