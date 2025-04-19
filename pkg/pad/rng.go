@@ -1,14 +1,11 @@
-// This file contains random number generation functionality for the padlock system.
-// It was previously in a separate rng package but has been moved into the pad package
-// due to their close alignment in the security model.
+// This file contains the core random number generation functionality
+// for the padlock system.
 
 package pad
 
 import (
 	"context"
-	crand "crypto/rand"
 	"fmt"
-	mrand "math/rand"
 	"sync"
 
 	"github.com/rayozzie/padlock/pkg/trace"
@@ -35,112 +32,6 @@ type RNG interface {
 	// The context allows for logging, cancellation, and propagation of request-scoped values.
 	// The returned error is non-nil only if the generator fails to provide randomness.
 	Read(ctx context.Context, p []byte) (n int, err error)
-}
-
-// CryptoRNG is the primary source of randomness for the padlock system.
-//
-// This implementation uses Go's crypto/rand package, which interfaces with the
-// operating system's cryptographically secure random number generator (CSRNG).
-// On Unix-like systems, this typically means /dev/urandom or /dev/random,
-// while on Windows, it uses the CryptGenRandom API.
-//
-// Key security properties:
-// - Uses the best available system entropy source
-// - Provides cryptographically secure randomness suitable for one-time pads
-// - Resistant to statistical analysis and prediction attacks
-// - Protected against concurrent access with internal locking
-//
-// Failure modes to monitor:
-// - On embedded systems, may block if system entropy is depleted
-// - May return errors during OS-level entropy source failures
-// - Can experience performance degradation under heavy load
-//
-// Usage:
-// This generator should typically be used as part of a MultiRNG setup
-// via the NewDefaultRNG() function, which provides additional redundancy.
-type CryptoRNG struct {
-	// lock protects against concurrent access to the crypto RNG
-	lock sync.Mutex
-}
-
-// Read implements the RNG interface by using the platform's strongest
-// random number generator with context support for logging.
-func (r *CryptoRNG) Read(ctx context.Context, p []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("CRYPTO-RNG")
-	log.Debugf("Reading %d random bytes from crypto/rand", len(p))
-
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	n, err := crand.Read(p)
-	if err != nil {
-		log.Error(fmt.Errorf("crypto/rand read failed: %w", err))
-		return n, fmt.Errorf("crypto/rand read failed: %w", err)
-	}
-
-	log.Debugf("Successfully read %d random bytes", n)
-	return n, nil
-}
-
-// MathRNG is a secondary source of randomness for the padlock system.
-//
-// This implementation uses Go's math/rand package with a cryptographically
-// secure seed obtained from crypto/rand. It serves as a backup source of
-// randomness, providing defense in depth in case the primary source experiences
-// issues.
-//
-// Security properties:
-// - Initialized with a high-entropy seed from crypto/rand
-// - Provides deterministic but unpredictable pseudorandom sequence
-// - Protected against concurrent access with internal locking
-// - Computationally efficient for generating large amounts of random data
-//
-// Security limitations:
-// - Relies on a good initial seed; compromised seed reduces security
-// - Not a cryptographically secure PRNG by itself
-// - Output will eventually repeat (though after a very long period)
-// - Should never be used as the sole source of randomness
-//
-// Usage context:
-// This generator is included in MultiRNG via NewDefaultRNG() to provide
-// additional entropy mixing and redundancy. It is never meant to be used
-// standalone for security-critical operations.
-type MathRNG struct {
-	// src is the pseudorandom source
-	src *mrand.Rand
-	// lock protects against concurrent access to the math RNG
-	lock sync.Mutex
-}
-
-// NewMathRNG creates a math/rand based RNG with a secure seed from crypto/rand.
-func NewMathRNG() *MathRNG {
-	var seed int64
-	b := make([]byte, 8)
-	if _, err := crand.Read(b); err == nil {
-		for i := 0; i < 8; i++ {
-			seed = (seed << 8) | int64(b[i])
-		}
-	}
-	return &MathRNG{
-		src: mrand.New(mrand.NewSource(seed)),
-	}
-}
-
-// Read implements the RNG interface by using a pseudo-random generator
-// with a cryptographically secure seed and context support for logging.
-func (mr *MathRNG) Read(ctx context.Context, p []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("MATH-RNG")
-	log.Debugf("Reading %d random bytes from math/rand", len(p))
-
-	mr.lock.Lock()
-	defer mr.lock.Unlock()
-
-	for i := range p {
-		p[i] = byte(mr.src.Intn(256))
-	}
-
-	log.Debugf("Successfully generated %d random bytes", len(p))
-	return len(p), nil
 }
 
 // MultiRNG provides enhanced security through entropy mixing from multiple sources.
@@ -190,36 +81,71 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 	// Initialize accumulator
 	acc := make([]byte, len(p))
 
+	// Track which sources successfully contributed
+	successfulSources := 0
+
 	// Read from each source and XOR outputs
 	for i, s := range m.Sources {
 		log.Debugf("Reading from source #%d", i+1)
 		tmp := make([]byte, len(p))
 		offset := 0
 
+		// Determine source type for better logging
+		sourceType := "generic"
+		if _, ok := s.(*CryptoRNG); ok {
+			sourceType = "crypto"
+		} else if _, ok := s.(*MathRNG); ok {
+			sourceType = "math"
+		} else if _, ok := s.(*QuantumRNG); ok {
+			sourceType = "quantum"
+		} else if _, ok := s.(*ChaCha20Rand); ok {
+			sourceType = "chacha20"
+		} else if _, ok := s.(*PCG64Rand); ok {
+			sourceType = "pcg64"
+		} else if _, ok := s.(*MT19937Rand); ok {
+			sourceType = "mt19937"
+		}
+
 		// Ensure we get a full buffer from each source
+		sourceSuccess := false
 		for offset < len(p) {
 			n, err := s.Read(ctx, tmp[offset:])
+
+			// If any source fails, log and propagate the error
 			if err != nil {
-				log.Error(fmt.Errorf("random source #%d failed: %w", i+1, err))
-				return 0, fmt.Errorf("random source #%d failed: %w", i+1, err)
+				log.Error(fmt.Errorf("%s random source failed: %w", sourceType, err))
+				return 0, fmt.Errorf("%s random source failed: %w", sourceType, err)
 			}
+
+			// Skip on zero bytes read
 			if n == 0 {
 				continue
 			}
+
+			// Mark progress
 			offset += n
+			sourceSuccess = true
 		}
 
-		// XOR this source's output into the accumulator
-		for j := 0; j < len(p); j++ {
-			acc[j] ^= tmp[j]
+		// Only XOR and count this source if it successfully provided data
+		if sourceSuccess {
+			// XOR this source's output into the accumulator
+			for j := 0; j < len(p); j++ {
+				acc[j] ^= tmp[j]
+			}
+			successfulSources++
+			log.Debugf("Successfully mixed in %d bytes from %s source", len(p), sourceType)
 		}
+	}
 
-		log.Debugf("Successfully mixed in %d bytes from source #%d", len(p), i+1)
+	// Ensure we had at least one successful source
+	if successfulSources == 0 {
+		return 0, fmt.Errorf("no random sources were able to provide entropy")
 	}
 
 	// Copy final result to output buffer
 	copy(p, acc)
-	log.Debugf("Successfully generated %d secure random bytes", len(p))
+	log.Debugf("Successfully generated %d secure random bytes from %d sources", len(p), successfulSources)
 	return len(p), nil
 }
 
@@ -233,34 +159,55 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 // Current implementation includes:
 // 1. A cryptographically secure RNG from crypto/rand (OS-level entropy source)
 // 2. A pseudo-random generator securely seeded from crypto/rand
+// 3. ChaCha20 stream cipher with random key and nonce
+// 4. PCG64 PRNG with secure seed
+// 5. Mersenne Twister PRNG with secure seed
+// 6. ANU Quantum Random Numbers service (optional, enabled with -quantum-anu flag)
 //
 // Security properties:
 // - Information-theoretic security (assuming at least one good source)
 // - Resilience against implementation vulnerabilities in any single source
 // - Protection against entropy depletion or source failure
 // - Defense against both classical and quantum cryptanalysis
+// - Multiple independent entropy sources for maximum security
 //
 // Usage recommendation:
 //   - This function should be used to obtain an RNG for all production systems
 //   - The returned RNG should be reused throughout the application's lifetime
 //   - Callers should monitor returned errors which indicate entropy issues
-//   - For extremely security-sensitive applications, consider adding external
-//     hardware RNG sources to the returned MultiRNG's Sources slice
+//   - For extreme security, enable quantum RNG with -quantum-anu flag
 //
 // Example usage:
 //
-//	rng := pad.NewDefaultRNG()
+//	ctx := context.Background()
+//	// Optional: Enable quantum RNG if -quantum-anu flag was specified
+//	ctx = pad.WithQuantumEnabled(ctx, quantumFlagSpecified)
+//
+//	rng := pad.NewDefaultRNG(ctx)
 //	buf := make([]byte, 32)
-//	n, err := rng.Read(buf)
+//	n, err := rng.Read(ctx, buf)
 //	if err != nil {
 //	    // Handle error - this is critical and should never be ignored
 //	}
 //	// Use buf[:n] as high-quality random data
-func NewDefaultRNG() RNG {
+func NewDefaultRNG(ctx context.Context) RNG {
+	// Create basic sources
+	sources := []RNG{
+		&CryptoRNG{},      // Primary cryptographic source
+		NewMathRNG(),      // Securely seeded PRNG
+		NewChaCha20Rand(), // ChaCha20 stream cipher
+		NewPCG64Rand(),    // PCG64 PRNG
+		NewMT19937Rand(),  // Mersenne Twister
+	}
+
+	// Add quantum RNG only if explicitly enabled
+	if IsQuantumEnabled(ctx) {
+		log := trace.FromContext(ctx).WithPrefix("RNG")
+		log.Infof("Using ANU Quantum Random Numbers service (https://qrng.anu.edu.au)")
+		sources = append(sources, NewQuantumRNG())
+	}
+
 	return &MultiRNG{
-		Sources: []RNG{
-			&CryptoRNG{},
-			NewMathRNG(),
-		},
+		Sources: sources,
 	}
 }

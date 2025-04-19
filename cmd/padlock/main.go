@@ -51,8 +51,8 @@ import (
 // After displaying the help text, it exits with status code 1.
 func usage() {
 	fmt.Fprintf(os.Stderr, `Usage:
-  padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-zip]
-  padlock decode <inputDir> <outputDir> [-clear] [-verbose]
+  padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-zip] [-quantum-anu]
+  padlock decode <inputDir> <outputDir> [-clear] [-verbose] [-quantum-anu]
 
 Commands:
   encode            Split input data into N collections with K-of-N threshold security
@@ -70,10 +70,13 @@ Options:
   -chunk SIZE       Maximum candidate block size in bytes (default ~2MB)
   -verbose          Enable detailed (debug/trace) output
   -zip              Create zip files for each collection instead of directories
+  -quantum-anu      Use quantum randomness from the ANU Quantum Random Numbers service 
+                    (https://qrng.anu.edu.au) for additional entropy
 
 Examples:
   padlock encode ~/Documents/secret ~/Collections -copies 5 -required 3 -format png -zip
   padlock decode ~/Collections/subset ~/Restored -clear
+  padlock encode ~/Documents/top-secret ~/Collections -quantum-anu -copies 5 -required 3
 `)
 	os.Exit(1)
 }
@@ -133,6 +136,7 @@ func main() {
 		chunkVal := fs.Int("chunk", 2*1024*1024, "maximum candidate block size in bytes (default ~2MB)")
 		verboseVal := fs.Bool("verbose", false, "enable detailed (trace/debug) output")
 		zipVal := fs.Bool("zip", false, "create zip files for each collection instead of directories")
+		quantumAnuVal := fs.Bool("quantum-anu", false, "use quantum randomness from ANU Quantum Random Numbers service")
 		fs.Parse(os.Args[4:])
 
 		// Validate flags
@@ -159,20 +163,6 @@ func main() {
 			format = padlock.FormatBin
 		}
 
-		cfg := padlock.EncodeConfig{
-			InputDir:        inputDir,
-			OutputDir:       outputDir,
-			N:               *nVal,
-			K:               *reqVal,
-			Format:          format,
-			ChunkSize:       *chunkVal,
-			RNG:             pad.NewDefaultRNG(),
-			ClearIfNotEmpty: *clearVal,
-			Verbose:         *verboseVal,
-			Compression:     padlock.CompressionGzip,
-			ZipCollections:  *zipVal,
-		}
-
 		// Create context with tracer
 		ctx := context.Background()
 		logLevel := trace.LogLevelNormal
@@ -181,6 +171,32 @@ func main() {
 		}
 		log := trace.NewTracer("MAIN", logLevel)
 		ctx = trace.WithContext(ctx, log)
+		
+		// Set quantum RNG flag in context
+		ctx = pad.WithQuantumEnabled(ctx, *quantumAnuVal)
+		
+		// Display ANU attribution if quantum RNG is enabled
+		if *quantumAnuVal {
+			log.Infof("Using quantum random numbers from the ANU Quantum Random Numbers service")
+			log.Infof("Visit https://qrng.anu.edu.au for more information")
+		}
+		
+		// Create RNG with the configured context
+		rng := pad.NewDefaultRNG(ctx)
+
+		cfg := padlock.EncodeConfig{
+			InputDir:        inputDir,
+			OutputDir:       outputDir,
+			N:               *nVal,
+			K:               *reqVal,
+			Format:          format,
+			ChunkSize:       *chunkVal,
+			RNG:             rng,
+			ClearIfNotEmpty: *clearVal,
+			Verbose:         *verboseVal,
+			Compression:     padlock.CompressionGzip,
+			ZipCollections:  *zipVal,
+		}
 
 		// Encode the directory
 		if err := padlock.EncodeDirectory(ctx, cfg); err != nil {
@@ -212,17 +228,8 @@ func main() {
 		fs := flag.NewFlagSet("decode", flag.ExitOnError)
 		clearVal := fs.Bool("clear", false, "clear output directory if not empty")
 		verboseVal := fs.Bool("verbose", false, "enable detailed (trace/debug) output")
+		quantumAnuVal := fs.Bool("quantum-anu", false, "use quantum randomness from ANU Quantum Random Numbers service")
 		fs.Parse(os.Args[4:])
-
-		// Create config
-		cfg := padlock.DecodeConfig{
-			InputDir:        inputDir,
-			OutputDir:       outputDir,
-			RNG:             pad.NewDefaultRNG(),
-			Verbose:         *verboseVal,
-			Compression:     padlock.CompressionGzip,
-			ClearIfNotEmpty: *clearVal,
-		}
 
 		// Create context with tracer
 		ctx := context.Background()
@@ -232,6 +239,28 @@ func main() {
 		}
 		log := trace.NewTracer("MAIN", logLevel)
 		ctx = trace.WithContext(ctx, log)
+		
+		// Set quantum RNG flag in context
+		ctx = pad.WithQuantumEnabled(ctx, *quantumAnuVal)
+		
+		// Display ANU attribution if quantum RNG is enabled
+		if *quantumAnuVal {
+			log.Infof("Using quantum random numbers from the ANU Quantum Random Numbers service")
+			log.Infof("Visit https://qrng.anu.edu.au for more information")
+		}
+		
+		// Create RNG with the configured context
+		rng := pad.NewDefaultRNG(ctx)
+
+		// Create config
+		cfg := padlock.DecodeConfig{
+			InputDir:        inputDir,
+			OutputDir:       outputDir,
+			RNG:             rng,
+			Verbose:         *verboseVal,
+			Compression:     padlock.CompressionGzip,
+			ClearIfNotEmpty: *clearVal,
+		}
 
 		// Decode the directory
 		if err := padlock.DecodeDirectory(ctx, cfg); err != nil {

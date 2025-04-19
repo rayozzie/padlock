@@ -131,7 +131,7 @@ func TestPadEncodeDecodeRoundTrip(t *testing.T) {
 
 	// Encode the data
 	inputBuffer := bytes.NewBuffer(input)
-	err = pad.Encode(ctx, 128, inputBuffer, &TestRNG{}, newChunkFunc, "bin")
+	err = pad.Encode(ctx, 128, inputBuffer, NewTestRNG(0), newChunkFunc, "bin")
 	if err != nil {
 		t.Fatalf("Failed to encode: %v", err)
 	}
@@ -249,22 +249,7 @@ func TestPadEncodeDecodeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRNG is a deterministic RNG used for testing
-type TestRNG struct {
-	counter byte
-}
-
-func NewTestRNG() *TestRNG {
-	return &TestRNG{counter: 0}
-}
-
-func (r *TestRNG) Read(ctx context.Context, p []byte) (n int, err error) {
-	for i := range p {
-		p[i] = r.counter
-		r.counter++
-	}
-	return len(p), nil
-}
+// Using TestRNG from test_rng.go
 
 // debugReader wraps a reader and logs data being read for debugging
 // This helps identify how the internal chunk name is read and parsed during decoding
