@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/rayozzie/padlock"
+	"github.com/rayozzie/padlock/pkg/padlock"
+	"github.com/rayozzie/padlock/pkg/rng"
+	"github.com/rayozzie/padlock/pkg/trace"
 )
 
 func usage() {
@@ -28,69 +30,6 @@ Options:
 	os.Exit(1)
 }
 
-func checkOutputDir(dirPath string, clear bool) error {
-	expandedPath, err := filepath.Abs(dirPath)
-	if err != nil {
-		return fmt.Errorf("failed to expand path %s: %w", dirPath, err)
-	}
-	dirPath = expandedPath
-
-	info, err := os.Stat(dirPath)
-	if err == nil && info.IsDir() {
-		entries, err := os.ReadDir(dirPath)
-		if err != nil {
-			return fmt.Errorf("failed to read output directory: %w", err)
-		}
-		if len(entries) > 0 {
-			if !clear {
-				fileList := ""
-				remainingCount := 0
-				for i, entry := range entries {
-					if i < 5 {
-						fileList += fmt.Sprintf("\n  - %s", entry.Name())
-					} else {
-						remainingCount++
-					}
-				}
-				errorMsg := fmt.Sprintf("Output directory is not empty. Use -clear to clear the output directory.%s", fileList)
-				if remainingCount > 0 {
-					errorMsg += fmt.Sprintf("\n  ... and %d more files/directories", remainingCount)
-				}
-				return fmt.Errorf("%s", errorMsg)
-			}
-
-			log.Printf("Clearing output directory: %s", dirPath)
-			var clearErrors []string
-			for _, entry := range entries {
-				entryPath := filepath.Join(dirPath, entry.Name())
-				if err := os.RemoveAll(entryPath); err != nil {
-					errMsg := fmt.Sprintf("failed to remove %s: %v", entryPath, err)
-					log.Printf("%s", errMsg)
-					clearErrors = append(clearErrors, errMsg)
-				}
-			}
-			if len(clearErrors) > 0 {
-				if len(clearErrors) <= 3 {
-					return fmt.Errorf("failed to fully clear directory: %v", clearErrors)
-				}
-				return fmt.Errorf("failed to fully clear directory: %v and %d more errors", clearErrors[:3], len(clearErrors)-3)
-			}
-			entries, err = os.ReadDir(dirPath)
-			if err != nil {
-				return fmt.Errorf("failed to recheck output directory after clearing: %w", err)
-			}
-			if len(entries) > 0 {
-				return fmt.Errorf("output directory not empty after clearing, manual intervention required")
-			}
-		}
-		return nil
-	}
-	if err := os.MkdirAll(dirPath, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
-	return nil
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -107,6 +46,7 @@ func main() {
 		inputDir := os.Args[2]
 		outputDir := os.Args[3]
 
+		// Validate input directory
 		inputStat, err := os.Stat(inputDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -118,6 +58,7 @@ func main() {
 			log.Fatalf("Error: Input path is not a directory: %s", inputDir)
 		}
 
+		// Parse flags
 		fs := flag.NewFlagSet("encode", flag.ExitOnError)
 		nVal := fs.Int("copies", 2, "number of collections (must be between 2 and 26)")
 		reqVal := fs.Int("required", 2, "minimum collections required for reconstruction")
@@ -128,6 +69,7 @@ func main() {
 		zipVal := fs.Bool("zip", false, "create zip files for each collection instead of directories")
 		fs.Parse(os.Args[4:])
 
+		// Validate flags
 		if *nVal < 2 || *nVal > 26 {
 			log.Fatalf("Error: Number of collections (-copies) must be between 2 and 26, got %d", *nVal)
 		}
@@ -139,13 +81,16 @@ func main() {
 			log.Printf("Warning: -required value %d cannot be greater than number of collections (-copies) %d; adjusting to %d", *reqVal, *nVal, *nVal)
 			*reqVal = *nVal
 		}
+
 		*formatVal = strings.ToLower(*formatVal)
 		if *formatVal != "bin" && *formatVal != "png" {
 			log.Fatalf("Error: -format must be 'bin' or 'png', got '%s'", *formatVal)
 		}
 
-		if err := checkOutputDir(outputDir, *clearVal); err != nil {
-			log.Fatalf("Error: %v", err)
+		// Create config
+		format := padlock.FormatPNG
+		if *formatVal == "bin" {
+			format = padlock.FormatBin
 		}
 
 		cfg := padlock.EncodeConfig{
@@ -153,17 +98,27 @@ func main() {
 			OutputDir:       outputDir,
 			N:               *nVal,
 			K:               *reqVal,
-			Format:          *formatVal,
+			Format:          format,
 			ChunkSize:       *chunkVal,
-			RNG:             padlock.NewDefaultRNG(),
+			RNG:             rng.NewDefaultRNG(),
 			ClearIfNotEmpty: *clearVal,
 			Verbose:         *verboseVal,
-			Compression:     padlock.DefaultCompressionMode,
+			Compression:     padlock.CompressionGzip,
 			ZipCollections:  *zipVal,
 		}
 
-		if err := padlock.EncodeData(cfg); err != nil {
-			log.Fatalf("Error: Encode failed: %v", err)
+		// Create context with tracer
+		ctx := context.Background()
+		logLevel := trace.LogLevelNormal
+		if *verboseVal {
+			logLevel = trace.LogLevelVerbose
+		}
+		log := trace.NewTracer("MAIN", logLevel)
+		ctx = trace.WithContext(ctx, log)
+
+		// Encode the directory
+		if err := padlock.EncodeDirectory(ctx, cfg); err != nil {
+			log.Fatal(fmt.Errorf("encode failed: %w", err))
 		}
 
 	case "decode":
@@ -174,6 +129,7 @@ func main() {
 		inputDir := os.Args[2]
 		outputDir := os.Args[3]
 
+		// Validate input directory
 		inputStat, err := os.Stat(inputDir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -186,25 +142,34 @@ func main() {
 			log.Fatalf("Error: Input path is not a directory: %s. The input should be a directory containing collection subdirectories or ZIP files.", inputDir)
 		}
 
+		// Parse flags
 		fs := flag.NewFlagSet("decode", flag.ExitOnError)
 		clearVal := fs.Bool("clear", false, "clear output directory if not empty")
 		verboseVal := fs.Bool("verbose", false, "enable detailed (trace/debug) output")
 		fs.Parse(os.Args[4:])
 
-		if err := checkOutputDir(outputDir, *clearVal); err != nil {
-			log.Fatalf("Error: %v", err)
-		}
-
+		// Create config
 		cfg := padlock.DecodeConfig{
-			InputDir:    inputDir,
-			OutputDir:   outputDir,
-			RNG:         padlock.NewDefaultRNG(),
-			Verbose:     *verboseVal,
-			Compression: padlock.DefaultCompressionMode,
+			InputDir:        inputDir,
+			OutputDir:       outputDir,
+			RNG:             rng.NewDefaultRNG(),
+			Verbose:         *verboseVal,
+			Compression:     padlock.CompressionGzip,
+			ClearIfNotEmpty: *clearVal,
 		}
 
-		if err := padlock.DecodeData(cfg); err != nil {
-			log.Fatalf("Error: Decode failed: %v", err)
+		// Create context with tracer
+		ctx := context.Background()
+		logLevel := trace.LogLevelNormal
+		if *verboseVal {
+			logLevel = trace.LogLevelVerbose
+		}
+		log := trace.NewTracer("MAIN", logLevel)
+		ctx = trace.WithContext(ctx, log)
+
+		// Decode the directory
+		if err := padlock.DecodeDirectory(ctx, cfg); err != nil {
+			log.Fatal(fmt.Errorf("decode failed: %w", err))
 		}
 
 	default:

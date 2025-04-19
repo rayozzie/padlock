@@ -41,7 +41,7 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
     `<collectionID>_<chunkNumber>.bin`
 
 - **User-Friendly Messaging and Error Handling:**  
-  Messages intended for users (such as summaries and error notifications) are always displayed. Detailed trace and debug messages, which are prefixed with "ENCODE:" or "DECODE:", appear only when the `-verbose` flag is set.
+  Messages intended for users (such as summaries and error notifications) are always displayed. Detailed trace and debug messages, with component-specific prefixes (like "PADLOCK:", "FILE:", etc.), appear only when the `-verbose` flag is set.
 
 ## How It Works
 
@@ -61,12 +61,12 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
      - The record begins with a candidate ID (a string of K letters).
      - It then comprises two halves (left and right), constructed from the pad and ciphertext segments as described above.
      - A candidate block, starting with a record count, is built from all candidate records and is written to each collection’s directory.
-   - **Keychain Metadata:**  
-     A keychain record (designated as chunk 0) is written to every collection. This record contains metadata (number of copies, required collections, mode, and total input data size) using user-friendly terms.
+   - **Collection Organization:**  
+     Collections can be stored as directories or as ZIP archives. Each collection is named with a pattern that includes the required number (K), a collection letter, and the total number of copies (N).
 
 2. **Decoding Process:**
-   - **Keychain and Collection Discovery:**  
-     The keychain is read from one collection to extract important parameters. The available collection directories (each containing an explicit collection letter in its name) are then identified.
+   - **Collection Discovery:**  
+     The available collection directories or ZIP files are identified. ZIP files are automatically extracted to a temporary directory for processing. The collection names (containing the required copies and total copies) are parsed to extract important parameters.
    - **Candidate Record Selection:**  
      The tool determines which candidate record to use based on the available collection letters. If fewer than the required number of collections are present, an error is reported.
    - **Data Reconstruction:**  
@@ -101,7 +101,7 @@ go build -o padlock cmd/padlock/main.go
 
 - **Encode:**
 
-  padlock encode <inputDir> <outputDir> -copies 5 -required 3 -format png -chunk 2097152 [-clear] [-verbose]
+  padlock encode <inputDir> <outputDir> -copies 5 -required 3 -format png -chunk 2097152 [-clear] [-verbose] [-zip]
 
   - `<inputDir>`: Directory containing the data to be archived and encoded.
   - `<outputDir>`: Destination directory for the generated collection subdirectories.
@@ -110,16 +110,17 @@ go build -o padlock cmd/padlock/main.go
   - `-format`: Output format, either "bin" or "png".
   - `-chunk`: Candidate block size in bytes (total size allocated for candidate records in one chunk).
   - `-clear`: (Optional) Clears the output directory before encoding.
-  - `-verbose`: (Optional) Enables detailed trace/debug messages (prefixed with "ENCODE:").
+  - `-verbose`: (Optional) Enables detailed trace/debug messages.
+  - `-zip`: (Optional) Creates ZIP archives for each collection instead of directories.
 
 - **Decode:**
 
   padlock decode <inputDir> <outputDir> [-clear] [-verbose]
 
-  - `<inputDir>`: Root directory containing the collection subdirectories.
+  - `<inputDir>`: Root directory containing the collection subdirectories or ZIP files.
   - `<outputDir>`: Destination directory where the original data will be restored.
   - `-clear`: (Optional) Clears the output directory before decoding.
-  - `-verbose`: (Optional) Enables detailed trace/debug messages (prefixed with "DECODE:").
+  - `-verbose`: (Optional) Enables detailed trace/debug messages.
 
 **Important:**  
 Do not place the output directory within the input directory to avoid recursive processing. Also, ensure that the number of available collections meets or exceeds the required threshold; otherwise, an error will be displayed.
@@ -128,11 +129,17 @@ Do not place the output directory within the input directory to avoid recursive 
 
 - **Source File Organization:**
   - **cmd/padlock/main.go:** The command-line interface entry point.
-  - **encode.go:** Implements tar archiving, optional gzip compression, stream chunking, one-time pad encryption, candidate record generation, and file output.
-  - **decode.go:** Reassembles candidate records, recovers encrypted data via XOR, decompresses (if necessary), and untars the original data.
-  - **format.go:** Contains implementations for writing candidate blocks in both raw binary and PNG formats.
-  - **rng.go:** Provides secure random number generation by combining crypto/rand with math/rand.
-  - **common.go:** Includes utility functions such as generating K-element combinations and mapping collection indices to letters.
+  - **pkg/padlock/padlock.go:** Coordinates the encoding and decoding processes, integrating the various components.
+  - **pkg/file/:** Contains modules for file and directory operations:
+    - **format.go:** Implementations for working with different file formats (BIN and PNG).
+    - **directory.go:** Directory validation and management.
+    - **zip.go:** ZIP file creation and extraction.
+    - **collection.go:** Collection directory operations.
+    - **serialize.go:** Directory serialization/deserialization to/from tar streams.
+    - **compress.go:** Stream compression/decompression using gzip.
+  - **pkg/pad/pad.go:** Core implementation of the one-time pad threshold scheme.
+  - **pkg/rng/rng.go:** Provides secure random number generation by combining crypto/rand with math/rand.
+  - **pkg/trace/trace.go:** Context-based logging system for debug and trace information.
 
 ## Disclaimer
 
