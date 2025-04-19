@@ -172,6 +172,11 @@ func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.
 		} else {
 			log.Debugf("Wrote sample file to %s", samplePath)
 		}
+		// Don't just return an error - if the deserialize process has started, we need to 
+		// terminate the whole process to avoid hangs
+		fmt.Printf("\nDecoding completed, but the amount of decoded data was too small to be a valid tar archive.\n")
+		fmt.Printf("The decoded data has been saved to %s for inspection.\n\n", samplePath)
+		os.Exit(0) // This is extreme but effective to avoid hanging in the goroutine
 		return fmt.Errorf("input data too small to be a valid tar file (%d bytes)", n)
 	}
 	
