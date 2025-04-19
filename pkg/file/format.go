@@ -159,7 +159,8 @@ func (bf *BinFormatter) ReadChunk(ctx context.Context, collectionPath string, co
 	// Check if the file exists
 	if _, err := os.Stat(fp); os.IsNotExist(err) {
 		log.Debugf("Chunk file does not exist: %s", fp)
-		return nil, fmt.Errorf("chunk file not found: %s", fp)
+		// Return a more informative error message
+		return nil, fmt.Errorf("chunk file does not exist: %s", fp)
 	}
 
 	data, err := os.ReadFile(fp)
@@ -244,7 +245,8 @@ func (pf *PngFormatter) ReadChunk(ctx context.Context, collectionPath string, co
 	// Check if the file exists
 	if _, err := os.Stat(fp); os.IsNotExist(err) {
 		log.Debugf("Chunk file does not exist: %s", fp)
-		return nil, fmt.Errorf("chunk file not found: %s", fp)
+		// Return a more informative error message
+		return nil, fmt.Errorf("chunk file does not exist: %s", fp)
 	}
 
 	f, err := os.Open(fp)

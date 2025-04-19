@@ -274,6 +274,23 @@ func (cr *CollectionReader) ReadNextChunk(ctx context.Context) ([]byte, error) {
 
 	log.Debugf("Reading chunk %d from collection %s", cr.ChunkIndex, cr.Collection.Name)
 
+	// Check if we're looking for a chunk that exists before trying to read it
+	var filePath string
+	if cr.Collection.Format == FormatPNG {
+		filePath = filepath.Join(cr.Collection.Path, fmt.Sprintf("IMG%s_%04d.PNG", cr.Collection.Name, cr.ChunkIndex))
+	} else {
+		filePath = filepath.Join(cr.Collection.Path, fmt.Sprintf("%s_%04d.bin", cr.Collection.Name, cr.ChunkIndex))
+	}
+	
+	// Extra debug tracing
+	log.Debugf("Looking for chunk file: %s", filePath)
+	
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		log.Debugf("Chunk file does not exist: %s", filePath)
+		log.Debugf("No more chunks in collection %s after chunk %d", cr.Collection.Name, cr.ChunkIndex-1)
+		return nil, io.EOF
+	}
+
 	data, err := cr.Formatter.ReadChunk(ctx, cr.Collection.Path, 0, cr.ChunkIndex)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -284,9 +301,19 @@ func (cr *CollectionReader) ReadNextChunk(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 
-	// Increment the chunk index for the next call
-	cr.ChunkIndex++
-
-	log.Debugf("Successfully read chunk %d (%d bytes) from collection %s", cr.ChunkIndex-1, len(data), cr.Collection.Name)
+	// Don't increment the chunk index automatically
+	// The currentChunk value in the adapter controls which chunk to read
+	
+	log.Debugf("Successfully read chunk %d (%d bytes) from collection %s", cr.ChunkIndex, len(data), cr.Collection.Name)
+	
+	// Enhanced debugging
+	if len(data) > 0 {
+		if len(data) < 100 {
+			log.Tracef("Chunk data (%d bytes): %v", len(data), data)
+		} else {
+			log.Tracef("Chunk data (%d bytes): first 50 bytes: %v", len(data), data[:50])
+		}
+	}
+	
 	return data, nil
 }

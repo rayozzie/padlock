@@ -165,7 +165,7 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 			if err := p.encodeOneChunk(ctx, buffer[:bytesRead], S, chunkIndex, randomSource, newChunk, chunkFormat); err != nil {
 				return err
 			}
-			chunkIndex++
+			// chunkIndex incremented at loop level
 		}
 
 		// Check for errors or EOF
@@ -391,9 +391,8 @@ func (p *Pad) Decode(ctx context.Context, collections []io.Reader, output io.Wri
 		}
 	}
 
-	// Read chunks until EOF
-	chunkIndex := 1
-	for {
+	// Read chunks until we've processed all available chunks in all collections
+	for chunkIndex := 1; ; chunkIndex++ {
 		// For each collection, read the next chunk
 		chunks := make([][]byte, len(usableCollections))
 		chunkNames := make([]string, len(usableCollections))
@@ -488,7 +487,7 @@ func (p *Pad) Decode(ctx context.Context, collections []io.Reader, output io.Wri
 			return fmt.Errorf("failed to write decoded data: %w", err)
 		}
 
-		chunkIndex++
+		// chunkIndex incremented at loop level
 	}
 }
 

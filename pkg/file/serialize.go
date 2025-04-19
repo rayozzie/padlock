@@ -2,6 +2,7 @@ package file
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -141,7 +142,7 @@ func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.
 
 		errorMsg := fmt.Sprintf("Output directory is not empty: %s%s", outputDir, fileNames)
 		log.Error(fmt.Errorf("%s", errorMsg))
-		return fmt.Errorf("directory %s is not empty, use clear=true to force", outputDir)
+		return fmt.Errorf("directory %s is not empty, use -clear to force", outputDir)
 	}
 
 	// Create the output directory if it doesn't exist
@@ -151,7 +152,32 @@ func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.
 	}
 
 	log.Debugf("Reading tar stream")
-	tr := tar.NewReader(r)
+	
+	// Read a small buffer to check if it looks like a tar file
+	// TAR files start with a 512-byte header
+	peekBuf := make([]byte, 512)
+	n, err := r.Read(peekBuf)
+	if err != nil && err != io.EOF {
+		log.Error(fmt.Errorf("error reading from input stream: %w", err))
+		return fmt.Errorf("error reading from input stream: %w", err)
+	}
+	
+	if n < 512 {
+		log.Error(fmt.Errorf("input data too small to be a valid tar file (only %d bytes)", n))
+		log.Debugf("Data received: %v", peekBuf[:n])
+		// Create a sample file to see the data
+		samplePath := filepath.Join(outputDir, "sample.dat")
+		if err := os.WriteFile(samplePath, peekBuf[:n], 0644); err != nil {
+			log.Debugf("Failed to write sample file: %v", err)
+		} else {
+			log.Debugf("Wrote sample file to %s", samplePath)
+		}
+		return fmt.Errorf("input data too small to be a valid tar file (%d bytes)", n)
+	}
+	
+	// Create a new reader that first returns our peeked data, then the rest
+	combinedReader := io.MultiReader(bytes.NewReader(peekBuf[:n]), r)
+	tr := tar.NewReader(combinedReader)
 
 	fileCount := 0
 	totalBytes := int64(0)
@@ -160,11 +186,22 @@ func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
+			if fileCount == 0 {
+				log.Error(fmt.Errorf("no files found in tar archive"))
+				return fmt.Errorf("no files found in tar archive")
+			}
 			break // End of tar archive
 		}
 		if err != nil {
 			log.Error(fmt.Errorf("tar header read error: %w", err))
-			return err
+			// Create a sample file with the data we've seen
+			samplePath := filepath.Join(outputDir, "invalid_tar_sample.dat")
+			if err := os.WriteFile(samplePath, peekBuf[:n], 0644); err != nil {
+				log.Debugf("Failed to write invalid tar sample: %v", err)
+			} else {
+				log.Debugf("Wrote invalid tar sample to %s", samplePath)
+			}
+			return fmt.Errorf("tar header read error: %w", err)
 		}
 
 		// Get the full path for extraction

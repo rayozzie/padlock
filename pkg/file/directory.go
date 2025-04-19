@@ -98,7 +98,7 @@ func PrepareOutputDirectory(ctx context.Context, outputDir string, clear bool) e
 				}
 			}
 
-			errMsg := fmt.Sprintf("Output directory is not empty. Use clear=true to clear the output directory.%s", fileList)
+			errMsg := fmt.Sprintf("Output directory is not empty. Use -clear to clear the output directory.%s", fileList)
 			if remainingCount > 0 {
 				errMsg += fmt.Sprintf("\n  ... and %d more files/directories", remainingCount)
 			}

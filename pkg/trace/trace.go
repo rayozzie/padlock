@@ -15,6 +15,8 @@ const (
 	LogLevelNormal LogLevel = iota
 	// LogLevelVerbose for detailed debug/trace info
 	LogLevelVerbose
+	// LogLevelTrace for maximum verbosity with full trace output
+	LogLevelTrace
 )
 
 type traceKeyType string
@@ -35,6 +37,15 @@ func NewTracer(prefix string, level LogLevel) *Tracer {
 		level:   level,
 		verbose: level >= LogLevelVerbose,
 	}
+}
+
+// Tracef logs a message at the TRACE level (most verbose)
+func (t *Tracer) Tracef(format string, args ...interface{}) {
+	if t.level < LogLevelTrace {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	log.Printf("%s TRACE: %s", t.prefix, msg)
 }
 
 // WithContext adds the tracer to the given context

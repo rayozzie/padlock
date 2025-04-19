@@ -74,6 +74,7 @@ type MultiRNG struct {
 func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 	log := trace.FromContext(ctx).WithPrefix("MULTI-RNG")
 	log.Debugf("Generating %d random bytes from %d sources", len(p), len(m.Sources))
+	log.Tracef("Entropy request: %d bytes with %d entropy sources available", len(p), len(m.Sources))
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -135,6 +136,8 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 			}
 			successfulSources++
 			log.Debugf("Successfully mixed in %d bytes from %s source", len(p), sourceType)
+			log.Tracef("Entropy source %d (%s) contributed %d bytes of entropy to the mix", 
+				i+1, sourceType, len(p))
 		}
 	}
 
@@ -146,6 +149,8 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 	// Copy final result to output buffer
 	copy(p, acc)
 	log.Debugf("Successfully generated %d secure random bytes from %d sources", len(p), successfulSources)
+	log.Tracef("Final entropy mix complete: %d bytes from %d/%d sources", 
+		len(p), successfulSources, len(m.Sources))
 	return len(p), nil
 }
 
@@ -191,6 +196,7 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 //	}
 //	// Use buf[:n] as high-quality random data
 func NewDefaultRNG(ctx context.Context) RNG {
+	log := trace.FromContext(ctx).WithPrefix("RNG")
 	// Create basic sources
 	sources := []RNG{
 		&CryptoRNG{},      // Primary cryptographic source
@@ -199,13 +205,18 @@ func NewDefaultRNG(ctx context.Context) RNG {
 		NewPCG64Rand(),    // PCG64 PRNG
 		NewMT19937Rand(),  // Mersenne Twister
 	}
+	
+	log.Tracef("Initializing RNG with %d base entropy sources", len(sources))
 
 	// Add quantum RNG only if explicitly enabled
 	if IsQuantumEnabled(ctx) {
 		log := trace.FromContext(ctx).WithPrefix("RNG")
 		log.Infof("Using ANU Quantum Random Numbers service (https://qrng.anu.edu.au)")
+		log.Tracef("Adding quantum RNG source to entropy pool")
 		sources = append(sources, NewQuantumRNG())
 	}
+	
+	log.Tracef("MultiRNG initialized with %d entropy sources", len(sources))
 
 	return &MultiRNG{
 		Sources: sources,
