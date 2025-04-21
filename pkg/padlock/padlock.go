@@ -15,19 +15,19 @@
 // The key components of this package are:
 //
 // 1. EncodeDirectory: Splits an input directory into N collections
-//    - Validates input/output directories
-//    - Creates necessary directories and collections
-//    - Serializes input directory to a tar stream
-//    - Optionally compresses the data
-//    - Processes chunks through the pad encoding
-//    - Writes to collections in specified format
-//    - Optionally creates ZIP archives for collections
+//   - Validates input/output directories
+//   - Creates necessary directories and collections
+//   - Serializes input directory to a tar stream
+//   - Optionally compresses the data
+//   - Processes chunks through the pad encoding
+//   - Writes to collections in specified format
+//   - Optionally creates ZIP archives for collections
 //
 // 2. DecodeDirectory: Reconstructs original data from K or more collections
-//    - Locates and validates available collections
-//    - Handles both directory and ZIP collection formats
-//    - Sets up a pipeline for decoding and decompression
-//    - Deserializes the decoded stream to output directory
+//   - Locates and validates available collections
+//   - Handles both directory and ZIP collection formats
+//   - Sets up a pipeline for decoding and decompression
+//   - Deserializes the decoded stream to output directory
 //
 // Security considerations:
 // - Security depends entirely on the quality of randomness
@@ -61,7 +61,7 @@ const (
 	// FormatBin is a binary format that stores data chunks directly as binary files.
 	// This format is more efficient but less portable across different systems.
 	FormatBin = file.FormatBin
-	
+
 	// FormatPNG is a PNG format that stores data chunks as images.
 	// This format is useful for cases where binary files might be altered by
 	// transfer systems, or where visual confirmation of collection existence is helpful.
@@ -70,7 +70,7 @@ const (
 	// CompressionNone indicates no compression will be applied to the serialized data.
 	// Use this when processing already compressed data or when processing speed is critical.
 	CompressionNone Compression = iota
-	
+
 	// CompressionGzip indicates gzip compression will be applied to reduce storage requirements.
 	// This is the default compression mode, providing good compression ratios with reasonable speed.
 	CompressionGzip
@@ -79,28 +79,28 @@ const (
 // EncodeConfig holds configuration parameters for the encoding operation.
 // This structure is created by the command-line interface and passed to EncodeDirectory.
 type EncodeConfig struct {
-	InputDir        string     // Path to the directory containing data to encode
-	OutputDir       string     // Path where the encoded collections will be created
-	N               int        // Total number of collections to create (N value)
-	K               int        // Minimum collections required for reconstruction (K value)
-	Format          Format     // Output format (binary or PNG)
-	ChunkSize       int        // Maximum size for data chunks in bytes
-	RNG             pad.RNG    // Random number generator for one-time pad creation
-	ClearIfNotEmpty bool       // Whether to clear the output directory if not empty
-	Verbose         bool       // Enable verbose logging
-	Compression     Compression// Compression mode for the serialized data
-	ZipCollections  bool       // Whether to create ZIP archives for collections
+	InputDir        string      // Path to the directory containing data to encode
+	OutputDir       string      // Path where the encoded collections will be created
+	N               int         // Total number of collections to create (N value)
+	K               int         // Minimum collections required for reconstruction (K value)
+	Format          Format      // Output format (binary or PNG)
+	ChunkSize       int         // Maximum size for data chunks in bytes
+	RNG             pad.RNG     // Random number generator for one-time pad creation
+	ClearIfNotEmpty bool        // Whether to clear the output directory if not empty
+	Verbose         bool        // Enable verbose logging
+	Compression     Compression // Compression mode for the serialized data
+	ZipCollections  bool        // Whether to create ZIP archives for collections
 }
 
 // DecodeConfig holds configuration parameters for the decoding operation.
 // This structure is created by the command-line interface and passed to DecodeDirectory.
 type DecodeConfig struct {
-	InputDir        string     // Path to the directory containing collections to decode
-	OutputDir       string     // Path where the decoded data will be written
-	RNG             pad.RNG    // Random number generator (unused for decoding, but maintained for consistency)
-	Verbose         bool       // Enable verbose logging
-	Compression     Compression// Compression mode used when the data was encoded
-	ClearIfNotEmpty bool       // Whether to clear the output directory if not empty
+	InputDir        string      // Path to the directory containing collections to decode
+	OutputDir       string      // Path where the decoded data will be written
+	RNG             pad.RNG     // Random number generator (unused for decoding, but maintained for consistency)
+	Verbose         bool        // Enable verbose logging
+	Compression     Compression // Compression mode used when the data was encoded
+	ClearIfNotEmpty bool        // Whether to clear the output directory if not empty
 }
 
 // EncodeDirectory encodes a directory using the padlock K-of-N threshold scheme.
@@ -321,9 +321,8 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 	// This goroutine reads from the pipe and writes to the output directory
 	var deserializeErr error
 	go func() {
-		defer close(done)
-		// We'll close the pipe writer explicitly after decode is complete
-		// Remove defer pw.Close() to avoid double-closing
+		defer close(done) // Signal completion via the done channel
+		defer pr.Close()  // Ensure pipe reader is closed when this goroutine exits
 
 		deserializeCtx := trace.WithContext(ctx, log.WithPrefix("DESERIALIZE"))
 
@@ -336,7 +335,7 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 			outputStream, err = file.DecompressStreamToStream(deserializeCtx, pr)
 			if err != nil {
 				log.Error(fmt.Errorf("failed to create decompression stream: %w", err))
-				pw.CloseWithError(fmt.Errorf("failed to create decompression stream: %w", err))
+				deserializeErr = err
 				return
 			}
 		}
@@ -346,9 +345,14 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 		log.Debugf("Deserializing to output directory: %s", cfg.OutputDir)
 		err := file.DeserializeDirectoryFromStream(deserializeCtx, cfg.OutputDir, outputStream, cfg.ClearIfNotEmpty)
 		if err != nil {
-			log.Error(fmt.Errorf("failed to deserialize directory: %w", err))
-			deserializeErr = err
-			pw.CloseWithError(fmt.Errorf("failed to deserialize directory: %w", err))
+			// Special case: Don't treat "too small" tar file as an error for small inputs
+			if strings.Contains(err.Error(), "too small to be a valid tar file") {
+				log.Infof("Input data appears to be a small raw file rather than a tar archive")
+				deserializeErr = nil
+			} else {
+				log.Error(fmt.Errorf("failed to deserialize directory: %w", err))
+				deserializeErr = err
+			}
 		}
 	}()
 
@@ -387,30 +391,24 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 		// Continue anyway, as the pipe might already be closed by the deserialization goroutine
 	}
 
-	// Wait for the deserialize goroutine to finish with a timeout
-	// For tests, use a short timeout to avoid hanging tests
-	timeoutDuration := 5 * time.Second
+	// In test environment, wait with a shorter timeout, but in production wait with a longer timeout
+	timeoutDuration := 30 * time.Second
 	if os.Getenv("GO_TEST") != "" || (ctx.Value(trace.TracerKey{}) != nil && strings.Contains(ctx.Value(trace.TracerKey{}).(*trace.Tracer).GetPrefix(), "TEST")) {
 		timeoutDuration = 3 * time.Second
 	}
-	
+
 	select {
 	case <-done:
 		log.Debugf("Deserialization goroutine completed")
 	case <-time.After(timeoutDuration):
+		// Avoid panic on pipe error
+		pw.CloseWithError(fmt.Errorf("timeout waiting for deserialization to complete"))
 		log.Error(fmt.Errorf("timeout waiting for deserialization to complete after %v", timeoutDuration))
 		return fmt.Errorf("timeout waiting for deserialization to complete after %v", timeoutDuration)
 	}
 
 	// Check if there was an error in the deserialization
 	if deserializeErr != nil {
-		// Special case: Don't treat "too small" tar file as an error
-		// This just means we decoded a small amount of data successfully
-		if strings.Contains(deserializeErr.Error(), "too small to be a valid tar file") {
-			log.Infof("Decoding completed successfully but generated only a small amount of data")
-			// The raw files should have been saved already by the deserialization process
-			return nil
-		}
 		return deserializeErr
 	}
 

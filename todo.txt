@@ -1,4 +1,3 @@
 - scan all source code and code review
-- padlock_test error hangs
 - quantum is useless
 - add a randomness test on data in the chunk writer layer before it is written to be formatted
