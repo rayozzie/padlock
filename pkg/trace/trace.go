@@ -19,6 +19,10 @@ const (
 	LogLevelTrace
 )
 
+// TracerKey is the key type used for storing tracers in context
+type TracerKey struct{}
+
+// Legacy key type for backwards compatibility
 type traceKeyType string
 
 const traceKey traceKeyType = "tracer"
@@ -50,11 +54,18 @@ func (t *Tracer) Tracef(format string, args ...interface{}) {
 
 // WithContext adds the tracer to the given context
 func WithContext(ctx context.Context, tracer *Tracer) context.Context {
+	// Store with both the new TracerKey and the legacy traceKey for backward compatibility
+	ctx = context.WithValue(ctx, TracerKey{}, tracer)
 	return context.WithValue(ctx, traceKey, tracer)
 }
 
 // FromContext extracts the tracer from the context
 func FromContext(ctx context.Context) *Tracer {
+	// Try the new TracerKey first
+	if tracer, ok := ctx.Value(TracerKey{}).(*Tracer); ok {
+		return tracer
+	}
+	// Fall back to legacy key
 	if tracer, ok := ctx.Value(traceKey).(*Tracer); ok {
 		return tracer
 	}
@@ -122,4 +133,9 @@ func (t *Tracer) WithPrefix(prefix string) *Tracer {
 		level:   t.level,
 		verbose: t.verbose,
 	}
+}
+
+// GetPrefix returns the tracer's prefix
+func (t *Tracer) GetPrefix() string {
+	return t.prefix
 }

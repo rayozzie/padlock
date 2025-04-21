@@ -26,7 +26,7 @@ import (
 // Collection represents a collection of encoded data in the padlock system.
 //
 // A collection is one of the N shares in the K-of-N threshold scheme. Each collection
-// contains chunks of encoded data that, when combined with chunks from K-1 other 
+// contains chunks of encoded data that, when combined with chunks from K-1 other
 // collections, can reconstruct the original data. Collections can be stored as
 // directories on disk or packaged as ZIP files for distribution.
 type Collection struct {
@@ -295,17 +295,22 @@ func (cr *CollectionReader) ReadNextChunk(ctx context.Context) ([]byte, error) {
 		return nil, io.EOF
 	}
 
-	data, err := cr.Formatter.ReadChunk(ctx, cr.Collection.Path, 0, cr.ChunkIndex)
+	// Read the current chunk
+	currentChunkIndex := cr.ChunkIndex
+	data, err := cr.Formatter.ReadChunk(ctx, cr.Collection.Path, 0, currentChunkIndex)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			log.Debugf("No more chunks in collection %s", cr.Collection.Name)
 			return nil, io.EOF
 		}
-		log.Error(fmt.Errorf("failed to read chunk %d from collection %s: %w", cr.ChunkIndex, cr.Collection.Name, err))
+		log.Error(fmt.Errorf("failed to read chunk %d from collection %s: %w", currentChunkIndex, cr.Collection.Name, err))
 		return nil, err
 	}
 
-	log.Debugf("Successfully read chunk %d (%d bytes) from collection %s", cr.ChunkIndex, len(data), cr.Collection.Name)
+	log.Debugf("Successfully read chunk %d (%d bytes) from collection %s", currentChunkIndex, len(data), cr.Collection.Name)
+	
+	// Increment the chunk index for the next read
+	cr.ChunkIndex++
 
 	return data, nil
 }

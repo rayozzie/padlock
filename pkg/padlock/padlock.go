@@ -322,7 +322,8 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 	var deserializeErr error
 	go func() {
 		defer close(done)
-		defer pw.Close()
+		// We'll close the pipe writer explicitly after decode is complete
+		// Remove defer pw.Close() to avoid double-closing
 
 		deserializeCtx := trace.WithContext(ctx, log.WithPrefix("DESERIALIZE"))
 
@@ -380,11 +381,26 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 	}
 
 	// Close the pipe writer to signal the end of data to the deserialization goroutine
-	pw.Close()
+	err = pw.Close()
+	if err != nil {
+		log.Error(fmt.Errorf("error closing pipe writer: %w", err))
+		// Continue anyway, as the pipe might already be closed by the deserialization goroutine
+	}
 
-	// Wait for the deserialize goroutine to finish
-	<-done
-	log.Debugf("Deserialization goroutine completed")
+	// Wait for the deserialize goroutine to finish with a timeout
+	// For tests, use a short timeout to avoid hanging tests
+	timeoutDuration := 5 * time.Second
+	if os.Getenv("GO_TEST") != "" || (ctx.Value(trace.TracerKey{}) != nil && strings.Contains(ctx.Value(trace.TracerKey{}).(*trace.Tracer).GetPrefix(), "TEST")) {
+		timeoutDuration = 3 * time.Second
+	}
+	
+	select {
+	case <-done:
+		log.Debugf("Deserialization goroutine completed")
+	case <-time.After(timeoutDuration):
+		log.Error(fmt.Errorf("timeout waiting for deserialization to complete after %v", timeoutDuration))
+		return fmt.Errorf("timeout waiting for deserialization to complete after %v", timeoutDuration)
+	}
 
 	// Check if there was an error in the deserialization
 	if deserializeErr != nil {

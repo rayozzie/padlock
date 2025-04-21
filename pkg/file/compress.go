@@ -49,35 +49,37 @@ func DecompressStreamToStream(ctx context.Context, r io.Reader) (io.Reader, erro
 	log := trace.FromContext(ctx).WithPrefix("DECOMPRESS")
 	log.Debugf("Starting decompression of stream")
 
-	// Read a small buffer to check if it's actually gzip data
-	peekBuf := make([]byte, 512)
-	n, err := r.Read(peekBuf)
-	if err != nil && err != io.EOF {
-		log.Error(fmt.Errorf("failed to read from input stream: %w", err))
-		return nil, fmt.Errorf("failed to read from input stream: %w", err)
+	// Use a buffer to peek at the first 2 bytes without consuming the stream
+	peekBuf := make([]byte, 2)
+	n, err := io.ReadFull(r, peekBuf)
+	
+	// If we couldn't read 2 bytes, the stream might be empty or has only 1 byte
+	if err != nil {
+		if err == io.EOF {
+			// Empty stream
+			log.Debugf("Stream is empty, returning empty reader")
+			return bytes.NewReader([]byte{}), nil
+		} else if err == io.ErrUnexpectedEOF {
+			// Stream has fewer than 2 bytes
+			log.Debugf("Stream has only %d bytes, too small to be compressed", n)
+			return bytes.NewReader(peekBuf[:n]), nil
+		} else {
+			// Real error
+			log.Error(fmt.Errorf("failed to read from input stream: %w", err))
+			return nil, fmt.Errorf("failed to read from input stream: %w", err)
+		}
 	}
-
-	log.Debugf("Read %d bytes from stream for header detection", n)
-
-	// If we read very few bytes, this might be the complete uncompressed data
-	if n < 512 {
-		log.Debugf("Received small data buffer (%d bytes), treating as complete data", n)
-		peekBuf = peekBuf[:n] // Truncate to actual bytes read
-		return bytes.NewReader(peekBuf), nil
-	}
-
-	peekBuf = peekBuf[:n] // Truncate to actual bytes read
-
-	// Create a new reader that first returns our peeked data, then the rest
+	
+	// Create a combined reader with the peeked data and the rest of the stream
 	combinedReader := io.MultiReader(bytes.NewReader(peekBuf), r)
-
+	
 	// Check if the data has a valid gzip header
-	if n < 2 || peekBuf[0] != 0x1f || peekBuf[1] != 0x8b {
+	if peekBuf[0] != 0x1f || peekBuf[1] != 0x8b {
 		log.Debugf("Data does not appear to be gzip compressed, skipping decompression")
 		// Return the combined reader without decompression
 		return combinedReader, nil
 	}
-
+	
 	// Create a new gzip reader
 	gzr, err := gzip.NewReader(combinedReader)
 	if err != nil {
@@ -85,7 +87,7 @@ func DecompressStreamToStream(ctx context.Context, r io.Reader) (io.Reader, erro
 		// If we can't create a gzip reader but detected gzip header, something is wrong with the data
 		return nil, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
-
+	
 	log.Debugf("Decompression started successfully")
 	return gzr, nil
 }

@@ -9,7 +9,7 @@
 //
 // The system employs a combination of Shamir's Secret Sharing principles and one-time pad
 // encryption. Unlike many cryptographic systems that rely on computational hardness,
-// padlock provides information-theoretic security, which means it is mathematically 
+// padlock provides information-theoretic security, which means it is mathematically
 // provably secure regardless of an attacker's computational resources.
 //
 // The command-line interface supports two main operations:
