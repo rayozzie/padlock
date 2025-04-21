@@ -24,12 +24,17 @@ func NewTestRNG(initialValue byte) *TestRNG {
 	return &TestRNG{counter: initialValue}
 }
 
+// Name
+func (r *TestRNG) Name() string {
+	return "test"
+}
+
 // Read implements the RNG interface with a deterministic, counter-based
 // random number generator suitable for testing.
-func (r *TestRNG) Read(ctx context.Context, p []byte) (n int, err error) {
+func (r *TestRNG) Read(ctx context.Context, p []byte) (err error) {
 	// For testing the quantum enabled flag
 	if ctx.Value("simulateQuantum") != nil && !IsQuantumEnabled(ctx) {
-		return 0, fmt.Errorf("quantum RNG disabled in test")
+		return fmt.Errorf("quantum RNG disabled in test")
 	}
 
 	// Normal behavior: fill the buffer with sequential counter values
@@ -37,5 +42,5 @@ func (r *TestRNG) Read(ctx context.Context, p []byte) (n int, err error) {
 		p[i] = r.counter
 		r.counter++
 	}
-	return len(p), nil
+	return nil
 }

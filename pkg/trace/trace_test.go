@@ -22,7 +22,7 @@ func TestNewTracer(t *testing.T) {
 	if tracer.verbose {
 		t.Errorf("Expected verbose=false, got true")
 	}
-	
+
 	// Test with verbose log level
 	tracer = NewTracer("DEBUG", LogLevelVerbose)
 	if tracer.prefix != "DEBUG" {
@@ -39,10 +39,10 @@ func TestNewTracer(t *testing.T) {
 func TestWithContext(t *testing.T) {
 	ctx := context.Background()
 	tracer := NewTracer("TEST", LogLevelNormal)
-	
+
 	// Add tracer to context
 	tracedCtx := WithContext(ctx, tracer)
-	
+
 	// Extract tracer from context
 	extracted := tracedCtx.Value(traceKey).(*Tracer)
 	if extracted != tracer {
@@ -55,24 +55,25 @@ func TestFromContext(t *testing.T) {
 	ctx := context.Background()
 	tracer := NewTracer("TEST", LogLevelNormal)
 	tracedCtx := WithContext(ctx, tracer)
-	
+
 	extracted := FromContext(tracedCtx)
 	if extracted != tracer {
 		t.Errorf("Expected FromContext to return the tracer we put in")
 	}
-	
+
 	// Test with no tracer in the context
 	emptyCtx := context.Background()
 	defaultTracer := FromContext(emptyCtx)
-	
+
 	if defaultTracer == nil {
 		t.Errorf("Expected a default tracer, got nil")
-	}
-	if defaultTracer.prefix != "" {
-		t.Errorf("Expected empty prefix for default tracer, got '%s'", defaultTracer.prefix)
-	}
-	if defaultTracer.level != LogLevelNormal {
-		t.Errorf("Expected level LogLevelNormal for default tracer, got %v", defaultTracer.level)
+	} else {
+		if defaultTracer.prefix != "" {
+			t.Errorf("Expected empty prefix for default tracer, got '%s'", defaultTracer.prefix)
+		}
+		if defaultTracer.level != LogLevelNormal {
+			t.Errorf("Expected level LogLevelNormal for default tracer, got %v", defaultTracer.level)
+		}
 	}
 }
 
@@ -81,7 +82,7 @@ func TestSetVerbose(t *testing.T) {
 	if tracer.verbose {
 		t.Errorf("Expected initial verbose=false, got true")
 	}
-	
+
 	// Set to verbose
 	tracer.SetVerbose(true)
 	if !tracer.verbose {
@@ -90,7 +91,7 @@ func TestSetVerbose(t *testing.T) {
 	if tracer.level != LogLevelVerbose {
 		t.Errorf("Expected level LogLevelVerbose after SetVerbose(true), got %v", tracer.level)
 	}
-	
+
 	// Set back to normal
 	tracer.SetVerbose(false)
 	if tracer.verbose {
@@ -106,7 +107,7 @@ func TestIsVerbose(t *testing.T) {
 	if tracer.IsVerbose() {
 		t.Errorf("Expected IsVerbose()=false for normal tracer, got true")
 	}
-	
+
 	tracer = NewTracer("TEST", LogLevelVerbose)
 	if !tracer.IsVerbose() {
 		t.Errorf("Expected IsVerbose()=true for verbose tracer, got false")
@@ -118,20 +119,20 @@ func TestInfof(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	
+
 	tracer := NewTracer("TEST", LogLevelNormal)
 	tracer.Infof("Test message %d", 123)
-	
+
 	output := buf.String()
 	if !strings.Contains(output, "TEST: Test message 123") {
 		t.Errorf("Expected log output to contain 'TEST: Test message 123', got '%s'", output)
 	}
-	
+
 	// Test without prefix
 	buf.Reset()
 	tracer = NewTracer("", LogLevelNormal)
 	tracer.Infof("Plain message %d", 456)
-	
+
 	output = buf.String()
 	if !strings.Contains(output, "Plain message 456") {
 		t.Errorf("Expected log output to contain 'Plain message 456', got '%s'", output)
@@ -146,21 +147,21 @@ func TestDebugf(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	
+
 	// Test with normal log level (debug messages should be suppressed)
 	tracer := NewTracer("TEST", LogLevelNormal)
 	tracer.Debugf("Debug message %d", 123)
-	
+
 	output := buf.String()
 	if output != "" {
 		t.Errorf("Expected no debug output with normal log level, got '%s'", output)
 	}
-	
+
 	// Test with verbose log level
 	buf.Reset()
 	tracer = NewTracer("TEST", LogLevelVerbose)
 	tracer.Debugf("Debug message %d", 456)
-	
+
 	output = buf.String()
 	if !strings.Contains(output, "TEST: Debug message 456") {
 		t.Errorf("Expected log output to contain 'TEST: Debug message 456', got '%s'", output)
@@ -172,22 +173,22 @@ func TestError(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
-	
+
 	// Test with prefix
 	tracer := NewTracer("TEST", LogLevelNormal)
 	err := errors.New("test error")
 	tracer.Error(err)
-	
+
 	output := buf.String()
 	if !strings.Contains(output, "TEST ERROR: test error") {
 		t.Errorf("Expected log output to contain 'TEST ERROR: test error', got '%s'", output)
 	}
-	
+
 	// Test without prefix
 	buf.Reset()
 	tracer = NewTracer("", LogLevelNormal)
 	tracer.Error(err)
-	
+
 	output = buf.String()
 	if !strings.Contains(output, "ERROR: test error") {
 		t.Errorf("Expected log output to contain 'ERROR: test error', got '%s'", output)
@@ -196,14 +197,14 @@ func TestError(t *testing.T) {
 
 func TestWithPrefix(t *testing.T) {
 	original := NewTracer("ORIG", LogLevelVerbose)
-	
+
 	// Create a new tracer with a different prefix
 	child := original.WithPrefix("CHILD")
-	
+
 	if child.prefix != "CHILD" {
 		t.Errorf("Expected prefix 'CHILD', got '%s'", child.prefix)
 	}
-	
+
 	// The child should inherit the verbosity setting
 	if child.level != LogLevelVerbose {
 		t.Errorf("Expected child to inherit LogLevelVerbose, got %v", child.level)
@@ -211,7 +212,7 @@ func TestWithPrefix(t *testing.T) {
 	if !child.verbose {
 		t.Errorf("Expected child to inherit verbose=true, got false")
 	}
-	
+
 	// The original should be unchanged
 	if original.prefix != "ORIG" {
 		t.Errorf("Expected original prefix to remain 'ORIG', got '%s'", original.prefix)

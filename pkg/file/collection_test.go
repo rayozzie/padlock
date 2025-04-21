@@ -255,45 +255,6 @@ func TestCollectionReader(t *testing.T) {
 	}
 }
 
-func TestExtractRequiredInfo(t *testing.T) {
-	tests := []struct {
-		name      string
-		collName  string
-		expectN   int
-		expectK   int
-		expectErr bool
-	}{
-		{"Valid 3A5", "3A5", 5, 3, false},
-		{"Valid 2B4", "2B4", 4, 2, false},
-		{"Valid 5Z9", "5Z9", 9, 5, false},
-		{"Invalid format", "ABC", 0, 0, true},
-		{"Invalid number", "AB5", 0, 0, true},
-		{"Too short", "3A", 0, 0, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			n, k, err := ExtractRequiredInfo(tt.collName)
-
-			if tt.expectErr {
-				if err == nil {
-					t.Errorf("Expected error for collection name %s, but got none", tt.collName)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-				}
-				if n != tt.expectN {
-					t.Errorf("Expected N=%d, got %d", tt.expectN, n)
-				}
-				if k != tt.expectK {
-					t.Errorf("Expected K=%d, got %d", tt.expectK, k)
-				}
-			}
-		})
-	}
-}
-
 func TestIsCollectionName(t *testing.T) {
 	tests := []struct {
 		name     string

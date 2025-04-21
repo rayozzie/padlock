@@ -36,8 +36,8 @@ func TestQuantumEnabledFlag(t *testing.T) {
 	}
 }
 
-// TestQuantumRNGWithMockAPI tests the quantum RNG implementation with a mock API
-func TestQuantumRNGWithMockAPI(t *testing.T) {
+// TestQuantumRandWithMockAPI tests the quantum RNG implementation with a mock API
+func TestQuantumRandWithMockAPI(t *testing.T) {
 	// Create a mock server that simulates the ANU QRNG API
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return a successful response with 10 random bytes
@@ -48,7 +48,7 @@ func TestQuantumRNGWithMockAPI(t *testing.T) {
 	defer mockServer.Close()
 
 	// Create a quantum RNG that uses our mock server
-	qrng := NewQuantumRNG()
+	qrng := NewQuantumRand()
 	qrng.apiURL = mockServer.URL                         // Override the API URL
 	qrng.client = &http.Client{Timeout: 1 * time.Second} // Short timeout for testing
 
@@ -61,12 +61,9 @@ func TestQuantumRNGWithMockAPI(t *testing.T) {
 	buf := make([]byte, 20)
 
 	// Read random bytes
-	n, err := qrng.Read(ctx, buf)
+	err := qrng.Read(ctx, buf)
 	if err != nil {
 		t.Errorf("Failed to read random bytes: %v", err)
-	}
-	if n != len(buf) {
-		t.Errorf("Expected to read %d bytes, got %d", len(buf), n)
 	}
 
 	// Verify we got some non-zero data
@@ -82,8 +79,8 @@ func TestQuantumRNGWithMockAPI(t *testing.T) {
 	}
 }
 
-// TestQuantumRNGWithFailingAPI tests the quantum RNG behavior when the API fails
-func TestQuantumRNGWithFailingAPI(t *testing.T) {
+// TestQuantumRandWithFailingAPI tests the quantum RNG behavior when the API fails
+func TestQuantumRandWithFailingAPI(t *testing.T) {
 	// Create a mock server that simulates a failing API
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Return an error response
@@ -93,7 +90,7 @@ func TestQuantumRNGWithFailingAPI(t *testing.T) {
 	defer mockServer.Close()
 
 	// Create a quantum RNG that uses our mock server
-	qrng := NewQuantumRNG()
+	qrng := NewQuantumRand()
 	qrng.apiURL = mockServer.URL                         // Override the API URL
 	qrng.client = &http.Client{Timeout: 1 * time.Second} // Short timeout for testing
 
@@ -106,14 +103,14 @@ func TestQuantumRNGWithFailingAPI(t *testing.T) {
 	buf := make([]byte, 20)
 
 	// Read random bytes - should fail
-	_, err := qrng.Read(ctx, buf)
+	err := qrng.Read(ctx, buf)
 	if err == nil {
 		t.Errorf("Expected error when API fails, but got nil")
 	}
 }
 
-// TestDefaultRNGWithQuantumEnabled tests the NewDefaultRNG function with quantum RNG enabled
-func TestDefaultRNGWithQuantumEnabled(t *testing.T) {
+// TestDefaultRandWithQuantumEnabled tests the NewDefaultRand function with quantum RNG enabled
+func TestDefaultRandWithQuantumEnabled(t *testing.T) {
 	// Create a context with quantum RNG enabled
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
@@ -121,12 +118,12 @@ func TestDefaultRNGWithQuantumEnabled(t *testing.T) {
 	ctx = WithQuantumEnabled(ctx, true)
 
 	// Create RNG
-	rng := NewDefaultRNG(ctx)
+	rng := NewDefaultRand(ctx)
 
 	// Verify it's a MultiRNG
 	multiRNG, ok := rng.(*MultiRNG)
 	if !ok {
-		t.Fatalf("Expected NewDefaultRNG to return a MultiRNG, got %T", rng)
+		t.Fatalf("Expected NewDefaultRand to return a MultiRNG, got %T", rng)
 	}
 
 	// Count the sources
@@ -138,15 +135,15 @@ func TestDefaultRNGWithQuantumEnabled(t *testing.T) {
 		t.Errorf("Expected %d sources with quantum enabled, got %d", expectedSources, sourceCount)
 	}
 
-	// Last source should be a QuantumRNG
-	_, ok = multiRNG.Sources[sourceCount-1].(*QuantumRNG)
+	// Last source should be a QuantumRand
+	_, ok = multiRNG.Sources[sourceCount-1].(*QuantumRand)
 	if !ok {
-		t.Errorf("Expected last source to be a QuantumRNG, got %T", multiRNG.Sources[sourceCount-1])
+		t.Errorf("Expected last source to be a QuantumRand, got %T", multiRNG.Sources[sourceCount-1])
 	}
 }
 
-// TestDefaultRNGWithQuantumDisabled tests the NewDefaultRNG function with quantum RNG disabled
-func TestDefaultRNGWithQuantumDisabled(t *testing.T) {
+// TestDefaultRandWithQuantumDisabled tests the NewDefaultRand function with quantum RNG disabled
+func TestDefaultRandWithQuantumDisabled(t *testing.T) {
 	// Create a context with quantum RNG disabled
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
@@ -154,12 +151,12 @@ func TestDefaultRNGWithQuantumDisabled(t *testing.T) {
 	ctx = WithQuantumEnabled(ctx, false)
 
 	// Create RNG
-	rng := NewDefaultRNG(ctx)
+	rng := NewDefaultRand(ctx)
 
 	// Verify it's a MultiRNG
 	multiRNG, ok := rng.(*MultiRNG)
 	if !ok {
-		t.Fatalf("Expected NewDefaultRNG to return a MultiRNG, got %T", rng)
+		t.Fatalf("Expected NewDefaultRand to return a MultiRNG, got %T", rng)
 	}
 
 	// Count the sources
@@ -171,9 +168,9 @@ func TestDefaultRNGWithQuantumDisabled(t *testing.T) {
 		t.Errorf("Expected %d sources with quantum disabled, got %d", expectedSources, sourceCount)
 	}
 
-	// Last source should not be a QuantumRNG
-	_, ok = multiRNG.Sources[sourceCount-1].(*QuantumRNG)
+	// Last source should not be a QuantumRand
+	_, ok = multiRNG.Sources[sourceCount-1].(*QuantumRand)
 	if ok {
-		t.Errorf("Expected last source not to be a QuantumRNG, but it was")
+		t.Errorf("Expected last source not to be a QuantumRand, but it was")
 	}
 }

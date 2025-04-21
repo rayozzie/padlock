@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -76,7 +75,7 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 
 	// Create a new pad instance
 	log.Debugf("Creating pad instance with N=%d, K=%d", cfg.N, cfg.K)
-	p, err := pad.NewPad(cfg.N, cfg.K)
+	p, err := pad.NewPadForEncode(ctx, cfg.N, cfg.K)
 	if err != nil {
 		log.Error(fmt.Errorf("failed to create pad instance: %w", err))
 		return err
@@ -202,20 +201,20 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 	}
 
 	// Extract N and K parameters from the first collection's name
-	n, k, err := file.ExtractRequiredInfo(collections[0].Name)
-	if err != nil {
-		log.Error(fmt.Errorf("failed to extract threshold parameters: %w", err))
-		return fmt.Errorf("failed to extract threshold parameters: %w", err)
-	}
-	log.Infof("Collection info: copies=%d, required=%d", n, k)
+	n := len(collections)
+	log.Infof("Collections: %d", n)
 
 	// Create a pipe for the decoded data
 	log.Debugf("Creating pipe for decoded data")
 	pr, pw := io.Pipe()
 
+	// Channel to signal goroutine completion
+	done := make(chan struct{})
+
 	// Start the deserialization process in a goroutine
 	var deserializeErr error
 	go func() {
+		defer close(done)
 		defer pw.Close()
 
 		deserializeCtx := trace.WithContext(ctx, log.WithPrefix("DESERIALIZE"))
@@ -244,8 +243,8 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 	}()
 
 	// Create a new pad instance for decoding
-	log.Debugf("Creating pad instance with N=%d, K=%d", n, k)
-	p, err := pad.NewPad(n, k)
+	log.Debugf("Creating pad instance with N=%d", n)
+	p, err := pad.NewPadForDecode(ctx, n)
 	if err != nil {
 		log.Error(fmt.Errorf("failed to create pad instance: %w", err))
 		return err
@@ -253,36 +252,33 @@ func DecodeDirectory(ctx context.Context, cfg DecodeConfig) error {
 
 	// Run the decoding process
 	log.Debugf("Starting decode process")
-	
+
 	// Create collection names list
 	collectionNames := make([]string, len(collections))
 	for i, coll := range collections {
 		collectionNames[i] = coll.Name
 	}
-	
-	// Try direct decoding first (more reliable with chunk access)
-	log.Debugf("Attempting direct decoding from files")
-	err = p.DecodeDirect(ctx, cfg.InputDir, collectionNames, pw)
+
+	// Decode
+	err = p.Decode(ctx, readers, pw)
 	if err != nil {
-		log.Error(fmt.Errorf("direct decoding failed: %w", err))
-		
-		// Fall back to original method
-		log.Debugf("Falling back to standard decoding method")
-		err = p.Decode(ctx, readers, pw)
-		if err != nil {
-			log.Error(fmt.Errorf("decoding failed: %w", err))
-			return fmt.Errorf("decoding failed: %w", err)
-		}
+		log.Error(fmt.Errorf("decoding failed: %w", err))
+		return fmt.Errorf("decoding failed: %w", err)
 	}
+
+	// Make sure to close the pipe writer to signal the end of data
+	pw.Close()
+
+	// Wait for the deserialize goroutine to finish
+	<-done
+	log.Debugf("Deserialization goroutine completed")
 
 	// Check if there was an error in the deserialization
 	if deserializeErr != nil {
 		// Don't treat "too small" tar file as an error - it just means we got a small amount of data
 		if strings.Contains(deserializeErr.Error(), "too small to be a valid tar file") {
 			log.Infof("Decoding completed successfully but generated only a small amount of data")
-			// Output a diagnostic message for the user
-			fmt.Printf("\nDecoding completed, but the amount of decoded data was too small to be a valid tar archive.\n")
-			fmt.Printf("The decoded data has been saved to %s for inspection.\n\n", filepath.Join(cfg.OutputDir, "sample.dat"))
+			// The raw files should have been saved already by the deserialization process
 			return nil
 		}
 		return deserializeErr

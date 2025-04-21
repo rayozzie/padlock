@@ -187,7 +187,7 @@ func main() {
 		}
 
 		// Create RNG with the configured context
-		rng := pad.NewDefaultRNG(ctx)
+		rng := pad.NewDefaultRand(ctx)
 
 		cfg := padlock.EncodeConfig{
 			InputDir:        inputDir,
@@ -259,7 +259,7 @@ func main() {
 		}
 
 		// Create RNG with the configured context
-		rng := pad.NewDefaultRNG(ctx)
+		rng := pad.NewDefaultRand(ctx)
 
 		// Create config
 		cfg := padlock.DecodeConfig{

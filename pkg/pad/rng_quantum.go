@@ -28,15 +28,15 @@ func IsQuantumEnabled(ctx context.Context) bool {
 	return false
 }
 
-// quantumRNGResponse represents the JSON response from the ANU QRNG API.
-type quantumRNGResponse struct {
+// quantomRandResponse represents the JSON response from the ANU QRNG API.
+type quantomRandResponse struct {
 	Type    string `json:"type"`
 	Length  int    `json:"length"`
 	Data    []uint `json:"data"`
 	Success bool   `json:"success"`
 }
 
-// QuantumRNG is a random number generator that uses the ANU Quantum Random Numbers API.
+// QuantumRand is a random number generator that uses the ANU Quantum Random Numbers API.
 //
 // This implementation connects to the Australian National University's quantum random
 // number generator service, which produces true randomness from quantum vacuum fluctuations.
@@ -58,7 +58,7 @@ type quantumRNGResponse struct {
 // Usage:
 // This generator is included in MultiRNG via NewDefaultRNG() only when quantum
 // RNG is explicitly enabled with the -quantum-anu flag.
-type QuantumRNG struct {
+type QuantumRand struct {
 	// apiURL is the endpoint for the ANU QRNG API
 	apiURL string
 	// client is the HTTP client used for API requests
@@ -73,9 +73,9 @@ type QuantumRNG struct {
 	maxRequestSize int
 }
 
-// NewQuantumRNG creates a new quantum random number generator that uses the ANU QRNG API.
-func NewQuantumRNG() *QuantumRNG {
-	return &QuantumRNG{
+// NewQuantumRand creates a new quantum random number generator that uses the ANU QRNG API.
+func NewQuantumRand() *QuantumRand {
+	return &QuantumRand{
 		apiURL:         "https://qrng.anu.edu.au/API/jsonI.php",
 		client:         &http.Client{Timeout: 10 * time.Second},
 		cache:          make([]byte, 0, 1024),
@@ -84,11 +84,15 @@ func NewQuantumRNG() *QuantumRNG {
 	}
 }
 
+// Name
+func (q *QuantumRand) Name() string {
+	return "quantum"
+}
+
 // Read implements the RNG interface by fetching quantum random numbers from the ANU QRNG API.
 // It handles caching to reduce network calls.
-func (q *QuantumRNG) Read(ctx context.Context, p []byte) (int, error) {
+func (q *QuantumRand) Read(ctx context.Context, p []byte) error {
 	log := trace.FromContext(ctx).WithPrefix("QUANTUM-RNG")
-	log.Debugf("Reading %d random bytes from ANU Quantum RNG", len(p))
 
 	q.lock.Lock()
 	defer q.lock.Unlock()
@@ -100,7 +104,7 @@ func (q *QuantumRNG) Read(ctx context.Context, p []byte) (int, error) {
 		if len(q.cache) == 0 {
 			if err := q.refillCache(ctx, log); err != nil {
 				log.Error(fmt.Errorf("quantum RNG refill failed: %w", err))
-				return bytesRead, fmt.Errorf("quantum RNG unavailable: %w", err)
+				return fmt.Errorf("quantum RNG unavailable: %w", err)
 			}
 		}
 
@@ -112,12 +116,11 @@ func (q *QuantumRNG) Read(ctx context.Context, p []byte) (int, error) {
 		q.cache = q.cache[n:]
 	}
 
-	log.Debugf("Successfully read %d quantum random bytes", bytesRead)
-	return bytesRead, nil
+	return nil
 }
 
 // refillCache fetches random bytes from the ANU QRNG API and stores them in the cache.
-func (q *QuantumRNG) refillCache(ctx context.Context, log *trace.Tracer) error {
+func (q *QuantumRand) refillCache(ctx context.Context, log *trace.Tracer) error {
 	// Determine how many bytes to request
 	bytesToRequest := q.maxCacheSize - len(q.cache)
 	if bytesToRequest <= 0 {
@@ -166,7 +169,7 @@ func (q *QuantumRNG) refillCache(ctx context.Context, log *trace.Tracer) error {
 	}
 
 	// Parse the response
-	var qResp quantumRNGResponse
+	var qResp quantomRandResponse
 	if err := json.NewDecoder(resp.Body).Decode(&qResp); err != nil {
 		return fmt.Errorf("failed to decode API response: %w", err)
 	}

@@ -19,7 +19,7 @@ import (
 	"golang.org/x/crypto/chacha20"
 )
 
-// CryptoRNG is the primary source of randomness for the padlock system.
+// CryptoRand is the primary source of randomness for the padlock system.
 //
 // This implementation uses Go's crypto/rand package, which interfaces with the
 // operating system's cryptographically secure random number generator (CSRNG).
@@ -40,16 +40,25 @@ import (
 // Usage:
 // This generator should typically be used as part of a MultiRNG setup
 // via the NewDefaultRNG() function, which provides additional redundancy.
-type CryptoRNG struct {
+type CryptoRand struct {
 	// lock protects against concurrent access to the crypto RNG
 	lock sync.Mutex
 }
 
+// NewCryptoRand creates a crypto/rand based RNG
+func NewCryptoRand() *CryptoRand {
+	return &CryptoRand{}
+}
+
+// Name
+func (r *CryptoRand) Name() string {
+	return "crypto"
+}
+
 // Read implements the RNG interface by using the platform's strongest
 // random number generator with context support for logging.
-func (r *CryptoRNG) Read(ctx context.Context, p []byte) (int, error) {
+func (r *CryptoRand) Read(ctx context.Context, p []byte) error {
 	log := trace.FromContext(ctx).WithPrefix("CRYPTO-RNG")
-	log.Debugf("Reading %d random bytes from crypto/rand", len(p))
 
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -57,14 +66,17 @@ func (r *CryptoRNG) Read(ctx context.Context, p []byte) (int, error) {
 	n, err := crand.Read(p)
 	if err != nil {
 		log.Error(fmt.Errorf("crypto/rand read failed: %w", err))
-		return n, fmt.Errorf("crypto/rand read failed: %w", err)
+		return fmt.Errorf("crypto/rand read failed: %w", err)
+	}
+	if n != len(p) {
+		log.Error(fmt.Errorf("crypto/rand read returned %d bytes, expected %d", n, len(p)))
+		return fmt.Errorf("crypto/rand read returned %d bytes, expected %d", n, len(p))
 	}
 
-	log.Debugf("Successfully read %d random bytes", n)
-	return n, nil
+	return nil
 }
 
-// MathRNG is a secondary source of randomness for the padlock system.
+// MathRand is a secondary source of randomness for the padlock system.
 //
 // This implementation uses Go's math/rand package with a cryptographically
 // secure seed obtained from crypto/rand. It serves as a backup source of
@@ -87,15 +99,15 @@ func (r *CryptoRNG) Read(ctx context.Context, p []byte) (int, error) {
 // This generator is included in MultiRNG via NewDefaultRNG() to provide
 // additional entropy mixing and redundancy. It is never meant to be used
 // standalone for security-critical operations.
-type MathRNG struct {
+type MathRand struct {
 	// src is the pseudorandom source
 	src *mrand.Rand
 	// lock protects against concurrent access to the math RNG
 	lock sync.Mutex
 }
 
-// NewMathRNG creates a math/rand based RNG with a secure seed from crypto/rand.
-func NewMathRNG() *MathRNG {
+// NewMathRand creates a math/rand based RNG with a secure seed from crypto/rand.
+func NewMathRand() *MathRand {
 	var seed int64
 	b := make([]byte, 8)
 	if _, err := crand.Read(b); err == nil {
@@ -103,16 +115,19 @@ func NewMathRNG() *MathRNG {
 			seed = (seed << 8) | int64(b[i])
 		}
 	}
-	return &MathRNG{
+	return &MathRand{
 		src: mrand.New(mrand.NewSource(seed)),
 	}
 }
 
+// Name
+func (r *MathRand) Name() string {
+	return "math"
+}
+
 // Read implements the RNG interface by using a pseudo-random generator
 // with a cryptographically secure seed and context support for logging.
-func (mr *MathRNG) Read(ctx context.Context, p []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("MATH-RNG")
-	log.Debugf("Reading %d random bytes from math/rand", len(p))
+func (mr *MathRand) Read(ctx context.Context, p []byte) error {
 
 	mr.lock.Lock()
 	defer mr.lock.Unlock()
@@ -121,8 +136,7 @@ func (mr *MathRNG) Read(ctx context.Context, p []byte) (int, error) {
 		p[i] = byte(mr.src.Intn(256))
 	}
 
-	log.Debugf("Successfully generated %d random bytes", len(p))
-	return len(p), nil
+	return nil
 }
 
 // ChaCha20Rand implements RNG using the ChaCha20 stream cipher
@@ -162,10 +176,13 @@ func NewChaCha20Rand() *ChaCha20Rand {
 	}
 }
 
+// Name
+func (r *ChaCha20Rand) Name() string {
+	return "chacha20"
+}
+
 // Read implements the RNG interface by generating random bytes using ChaCha20
-func (c *ChaCha20Rand) Read(ctx context.Context, p []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("CHACHA20-RNG")
-	log.Debugf("Reading %d random bytes from ChaCha20 stream", len(p))
+func (c *ChaCha20Rand) Read(ctx context.Context, p []byte) error {
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -178,8 +195,7 @@ func (c *ChaCha20Rand) Read(ctx context.Context, p []byte) (int, error) {
 	// XOR with ChaCha20 keystream
 	c.stream.XORKeyStream(p, p)
 
-	log.Debugf("Successfully generated %d bytes from ChaCha20 stream", len(p))
-	return len(p), nil
+	return nil
 }
 
 // PCG64Rand implements RNG using the PCG64 algorithm from math/rand/v2
@@ -209,10 +225,13 @@ func NewPCG64Rand() *PCG64Rand {
 	}
 }
 
+// Name
+func (r *PCG64Rand) Name() string {
+	return "pcg64"
+}
+
 // Read implements the RNG interface by generating random bytes using PCG64
-func (p *PCG64Rand) Read(ctx context.Context, b []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("PCG64-RNG")
-	log.Debugf("Reading %d random bytes from PCG64 source", len(b))
+func (p *PCG64Rand) Read(ctx context.Context, b []byte) error {
 
 	p.lock.Lock()
 	defer p.lock.Unlock()
@@ -221,8 +240,7 @@ func (p *PCG64Rand) Read(ctx context.Context, b []byte) (int, error) {
 		b[i] = byte(p.rng.IntN(256))
 	}
 
-	log.Debugf("Successfully generated %d bytes from PCG64 source", len(b))
-	return len(b), nil
+	return nil
 }
 
 // MT19937Rand implements RNG using the Mersenne Twister algorithm
@@ -256,10 +274,13 @@ func NewMT19937Rand() *MT19937Rand {
 	}
 }
 
+// Name
+func (r *MT19937Rand) Name() string {
+	return "mt19937"
+}
+
 // Read implements the RNG interface by generating random bytes using MT19937
-func (m *MT19937Rand) Read(ctx context.Context, b []byte) (int, error) {
-	log := trace.FromContext(ctx).WithPrefix("MT19937-RNG")
-	log.Debugf("Reading %d random bytes from MT19937 source", len(b))
+func (m *MT19937Rand) Read(ctx context.Context, b []byte) error {
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -268,6 +289,5 @@ func (m *MT19937Rand) Read(ctx context.Context, b []byte) (int, error) {
 		b[i] = byte(m.wrapper.Intn(256))
 	}
 
-	log.Debugf("Successfully generated %d bytes from MT19937 source", len(b))
-	return len(b), nil
+	return nil
 }

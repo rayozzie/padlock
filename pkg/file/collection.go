@@ -193,18 +193,6 @@ func ZipCollections(ctx context.Context, collections []Collection) ([]string, er
 	return zipPaths, nil
 }
 
-// ExtractRequiredInfo extracts N and K parameters from collection name
-func ExtractRequiredInfo(collName string) (n int, k int, err error) {
-	// Collection names are in the format "<required><Letter><copies>" (e.g., "3A5")
-	var letter rune
-	_, err = fmt.Sscanf(collName, "%d%c%d", &k, &letter, &n)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to parse collection name %s: %w", collName, err)
-	}
-
-	return n, k, nil
-}
-
 // determineCollectionFormat determines the format of a collection by looking at its files
 func determineCollectionFormat(collPath string) (Format, error) {
 	files, err := os.ReadDir(collPath)
@@ -281,10 +269,10 @@ func (cr *CollectionReader) ReadNextChunk(ctx context.Context) ([]byte, error) {
 	} else {
 		filePath = filepath.Join(cr.Collection.Path, fmt.Sprintf("%s_%04d.bin", cr.Collection.Name, cr.ChunkIndex))
 	}
-	
+
 	// Extra debug tracing
 	log.Debugf("Looking for chunk file: %s", filePath)
-	
+
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		log.Debugf("Chunk file does not exist: %s", filePath)
 		log.Debugf("No more chunks in collection %s after chunk %d", cr.Collection.Name, cr.ChunkIndex-1)
@@ -301,19 +289,7 @@ func (cr *CollectionReader) ReadNextChunk(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 
-	// Don't increment the chunk index automatically
-	// The currentChunk value in the adapter controls which chunk to read
-	
 	log.Debugf("Successfully read chunk %d (%d bytes) from collection %s", cr.ChunkIndex, len(data), cr.Collection.Name)
-	
-	// Enhanced debugging
-	if len(data) > 0 {
-		if len(data) < 100 {
-			log.Tracef("Chunk data (%d bytes): %v", len(data), data)
-		} else {
-			log.Tracef("Chunk data (%d bytes): first 50 bytes: %v", len(data), data[:50])
-		}
-	}
-	
+
 	return data, nil
 }

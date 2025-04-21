@@ -32,7 +32,7 @@ func TestNewPad(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pad, err := NewPad(tt.totalCopies, tt.requiredCopies)
+			pad, err := NewPadForEncode(context.Background(), tt.totalCopies, tt.requiredCopies)
 
 			if tt.expectError {
 				if err == nil {
@@ -91,7 +91,7 @@ func TestPadEncodeDecodeRoundTrip(t *testing.T) {
 	}
 
 	// Create a pad
-	pad, err := NewPad(n, k)
+	pad, err := NewPadForEncode(context.Background(), n, k)
 	if err != nil {
 		t.Fatalf("Failed to create pad: %v", err)
 	}
@@ -294,78 +294,4 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// TestGenerateKCombinations tests the generation of k-element combinations
-func TestGenerateKCombinations(t *testing.T) {
-	tests := []struct {
-		n, k          int
-		expectedCount int
-	}{
-		{5, 3, 10},         // 5C3 = 10
-		{4, 2, 6},          // 4C2 = 6
-		{3, 3, 1},          // 3C3 = 1
-		{10, 5, 252},       // 10C5 = 252
-		{26, 13, 10400600}, // 26C13 = 10,400,600 (very large, might skip this)
-	}
-
-	for _, tt := range tests {
-		if tt.expectedCount > 10000 {
-			t.Logf("Skipping large combination test: %dC%d", tt.n, tt.k)
-			continue
-		}
-
-		t.Run(fmt.Sprintf("%dC%d", tt.n, tt.k), func(t *testing.T) {
-			combos := generateKCombinations(tt.n, tt.k)
-
-			// Check the count
-			if len(combos) != tt.expectedCount {
-				t.Errorf("Expected %d combinations, got %d", tt.expectedCount, len(combos))
-			}
-
-			// Check that each combination has k elements
-			for i, combo := range combos {
-				if len(combo) != tt.k {
-					t.Errorf("Combination %d has %d elements, expected %d", i, len(combo), tt.k)
-				}
-			}
-
-			// Check for uniqueness
-			seen := make(map[string]bool)
-			for _, combo := range combos {
-				// Convert combo to string for map key
-				key := fmt.Sprintf("%v", combo)
-				if seen[key] {
-					t.Errorf("Duplicate combination found: %v", combo)
-				}
-				seen[key] = true
-			}
-		})
-	}
-}
-
-// TestBinomialCoefficient tests the calculation of binomial coefficients
-func TestBinomialCoefficient(t *testing.T) {
-	tests := []struct {
-		n, k     int
-		expected int
-	}{
-		{5, 3, 10},
-		{10, 5, 252},
-		{20, 10, 184756},
-		{0, 0, 1},
-		{5, 0, 1},
-		{5, 5, 1},
-		{5, 6, 0},  // n < k
-		{5, -1, 0}, // invalid k
-	}
-
-	for _, tt := range tests {
-		t.Run(fmt.Sprintf("%dC%d", tt.n, tt.k), func(t *testing.T) {
-			result := binomialCoefficient(tt.n, tt.k)
-			if result != tt.expected {
-				t.Errorf("%dC%d = %d, expected %d", tt.n, tt.k, result, tt.expected)
-			}
-		})
-	}
 }

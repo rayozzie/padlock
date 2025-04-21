@@ -7,58 +7,52 @@ import (
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
-// TestCryptoRNGRandomness tests the randomness of CryptoRNG
-func TestCryptoRNGRandomness(t *testing.T) {
+// TestCryptoRandRandomness tests the randomness of CryptoRand
+func TestCryptoRandRandomness(t *testing.T) {
 	// Create a context with tracing
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
 	ctx = trace.WithContext(ctx, tracer)
 
-	// Create a CryptoRNG instance
-	rng := &CryptoRNG{}
+	// Create a CryptoRand instance
+	rng := &CryptoRand{}
 
 	// Test buffer (larger sample for statistical tests)
 	const bufSize = 100000
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
-		t.Fatalf("CryptoRNG read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("CryptoRNG returned short read: got %d, want %d", n, bufSize)
+		t.Fatalf("CryptoRand read failed: %v", err)
 	}
 
 	// Run statistical tests on the output
-	runRandomnessTests(t, "CryptoRNG", buf)
+	runRandomnessTests(t, "CryptoRand", buf)
 }
 
-// TestMathRNGRandomness tests the randomness of MathRNG
-func TestMathRNGRandomness(t *testing.T) {
+// TestMathRandRandomness tests the randomness of MathRand
+func TestMathRandRandomness(t *testing.T) {
 	// Create a context with tracing
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
 	ctx = trace.WithContext(ctx, tracer)
 
-	// Create a MathRNG instance
-	rng := NewMathRNG()
+	// Create a MathRand instance
+	rng := NewMathRand()
 
 	// Test buffer (larger sample for statistical tests)
 	const bufSize = 100000
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
-		t.Fatalf("MathRNG read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("MathRNG returned short read: got %d, want %d", n, bufSize)
+		t.Fatalf("MathRand read failed: %v", err)
 	}
 
 	// Run statistical tests on the output
-	runRandomnessTests(t, "MathRNG", buf)
+	runRandomnessTests(t, "MathRand", buf)
 }
 
 // TestChaCha20RandRandomness tests the randomness of ChaCha20Rand
@@ -76,12 +70,9 @@ func TestChaCha20RandRandomness(t *testing.T) {
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
 		t.Fatalf("ChaCha20Rand read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("ChaCha20Rand returned short read: got %d, want %d", n, bufSize)
 	}
 
 	// Run statistical tests on the output
@@ -103,12 +94,9 @@ func TestPCG64RandRandomness(t *testing.T) {
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
 		t.Fatalf("PCG64Rand read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("PCG64Rand returned short read: got %d, want %d", n, bufSize)
 	}
 
 	// Run statistical tests on the output
@@ -130,12 +118,9 @@ func TestMT19937RandRandomness(t *testing.T) {
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
 		t.Fatalf("MT19937Rand read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("MT19937Rand returned short read: got %d, want %d", n, bufSize)
 	}
 
 	// Run statistical tests on the output
@@ -158,12 +143,12 @@ func TestTestRNGPredictability(t *testing.T) {
 	buf2 := make([]byte, 1024)
 
 	// Get random bytes from both RNGs
-	_, err := rng1.Read(ctx, buf1)
+	err := rng1.Read(ctx, buf1)
 	if err != nil {
 		t.Fatalf("TestRNG read failed: %v", err)
 	}
 
-	_, err = rng2.Read(ctx, buf2)
+	err = rng2.Read(ctx, buf2)
 	if err != nil {
 		t.Fatalf("TestRNG read failed: %v", err)
 	}

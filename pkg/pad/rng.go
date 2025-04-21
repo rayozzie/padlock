@@ -6,6 +6,7 @@ package pad
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/rayozzie/padlock/pkg/trace"
@@ -28,10 +29,12 @@ import (
 // Security note: One-time pad encryption is only as secure as its random number
 // generator. If the RNG is compromised, the entire security model fails.
 type RNG interface {
+	// Name returns the name of the RNG implementation.
+	Name() string
 	// Read fills p with random bytes and returns the number of bytes written.
 	// The context allows for logging, cancellation, and propagation of request-scoped values.
 	// The returned error is non-nil only if the generator fails to provide randomness.
-	Read(ctx context.Context, p []byte) (n int, err error)
+	Read(ctx context.Context, p []byte) (err error)
 }
 
 // MultiRNG provides enhanced security through entropy mixing from multiple sources.
@@ -61,7 +64,7 @@ type RNG interface {
 //
 // Usage context:
 // This is the recommended RNG implementation for production use,
-// obtained through the NewDefaultRNG() function.
+// obtained through the NewDefaultRand() function.
 type MultiRNG struct {
 	// Sources is a slice of RNG implementations to combine
 	Sources []RNG
@@ -69,12 +72,15 @@ type MultiRNG struct {
 	lock sync.Mutex
 }
 
+// Name
+func (m *MultiRNG) Name() string {
+	return "multi"
+}
+
 // Read implements the RNG interface by combining multiple random sources.
 // It XORs the output of all sources to produce the final random bytes.
-func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
+func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 	log := trace.FromContext(ctx).WithPrefix("MULTI-RNG")
-	log.Debugf("Generating %d random bytes from %d sources", len(p), len(m.Sources))
-	log.Tracef("Entropy request: %d bytes with %d entropy sources available", len(p), len(m.Sources))
 
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -82,79 +88,40 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 	// Initialize accumulator
 	acc := make([]byte, len(p))
 
-	// Track which sources successfully contributed
-	successfulSources := 0
-
 	// Read from each source and XOR outputs
-	for i, s := range m.Sources {
-		log.Debugf("Reading from source #%d", i+1)
+	sourceNames := []string{}
+	for _, s := range m.Sources {
 		tmp := make([]byte, len(p))
-		offset := 0
 
 		// Determine source type for better logging
-		sourceType := "generic"
-		if _, ok := s.(*CryptoRNG); ok {
-			sourceType = "crypto"
-		} else if _, ok := s.(*MathRNG); ok {
-			sourceType = "math"
-		} else if _, ok := s.(*QuantumRNG); ok {
-			sourceType = "quantum"
-		} else if _, ok := s.(*ChaCha20Rand); ok {
-			sourceType = "chacha20"
-		} else if _, ok := s.(*PCG64Rand); ok {
-			sourceType = "pcg64"
-		} else if _, ok := s.(*MT19937Rand); ok {
-			sourceType = "mt19937"
+		sourceType := s.Name()
+		sourceNames = append(sourceNames, sourceType)
+
+		// If any source fails, log and propagate the error
+		err := s.Read(ctx, tmp)
+		if err != nil {
+			log.Error(fmt.Errorf("%s random source failed: %w", sourceType, err))
+			return fmt.Errorf("%s random source failed: %w", sourceType, err)
 		}
 
-		// Ensure we get a full buffer from each source
-		sourceSuccess := false
-		for offset < len(p) {
-			n, err := s.Read(ctx, tmp[offset:])
-
-			// If any source fails, log and propagate the error
-			if err != nil {
-				log.Error(fmt.Errorf("%s random source failed: %w", sourceType, err))
-				return 0, fmt.Errorf("%s random source failed: %w", sourceType, err)
-			}
-
-			// Skip on zero bytes read
-			if n == 0 {
-				continue
-			}
-
-			// Mark progress
-			offset += n
-			sourceSuccess = true
-		}
-
-		// Only XOR and count this source if it successfully provided data
-		if sourceSuccess {
-			// XOR this source's output into the accumulator
-			for j := 0; j < len(p); j++ {
-				acc[j] ^= tmp[j]
-			}
-			successfulSources++
-			log.Debugf("Successfully mixed in %d bytes from %s source", len(p), sourceType)
-			log.Tracef("Entropy source %d (%s) contributed %d bytes of entropy to the mix", 
-				i+1, sourceType, len(p))
+		// XOR this source's output into the accumulator
+		for j := 0; j < len(p); j++ {
+			acc[j] ^= tmp[j]
 		}
 	}
 
 	// Ensure we had at least one successful source
-	if successfulSources == 0 {
-		return 0, fmt.Errorf("no random sources were able to provide entropy")
+	if len(sourceNames) == 0 {
+		return fmt.Errorf("no random sources were able to provide entropy")
 	}
 
 	// Copy final result to output buffer
 	copy(p, acc)
-	log.Debugf("Successfully generated %d secure random bytes from %d sources", len(p), successfulSources)
-	log.Tracef("Final entropy mix complete: %d bytes from %d/%d sources", 
-		len(p), successfulSources, len(m.Sources))
-	return len(p), nil
+	log.Debugf("rng: generated %d secure random bytes from %s", len(p), strings.Join(sourceNames, "+"))
+	return nil
 }
 
-// NewDefaultRNG creates the recommended production-ready random number generator.
+// NewDefaultRand creates the recommended production-ready random number generator.
 //
 // This factory function returns a multi-source RNG that combines several independent
 // sources of randomness for maximum security and resilience against various
@@ -188,24 +155,24 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) (int, error) {
 //	// Optional: Enable quantum RNG if -quantum-anu flag was specified
 //	ctx = pad.WithQuantumEnabled(ctx, quantumFlagSpecified)
 //
-//	rng := pad.NewDefaultRNG(ctx)
+//	rng := pad.NewDefaultRand(ctx)
 //	buf := make([]byte, 32)
 //	n, err := rng.Read(ctx, buf)
 //	if err != nil {
 //	    // Handle error - this is critical and should never be ignored
 //	}
 //	// Use buf[:n] as high-quality random data
-func NewDefaultRNG(ctx context.Context) RNG {
+func NewDefaultRand(ctx context.Context) RNG {
 	log := trace.FromContext(ctx).WithPrefix("RNG")
 	// Create basic sources
 	sources := []RNG{
-		&CryptoRNG{},      // Primary cryptographic source
-		NewMathRNG(),      // Securely seeded PRNG
+		NewCryptoRand(),   // Primary cryptographic source
+		NewMathRand(),     // Securely seeded PRNG
 		NewChaCha20Rand(), // ChaCha20 stream cipher
 		NewPCG64Rand(),    // PCG64 PRNG
 		NewMT19937Rand(),  // Mersenne Twister
 	}
-	
+
 	log.Tracef("Initializing RNG with %d base entropy sources", len(sources))
 
 	// Add quantum RNG only if explicitly enabled
@@ -213,9 +180,9 @@ func NewDefaultRNG(ctx context.Context) RNG {
 		log := trace.FromContext(ctx).WithPrefix("RNG")
 		log.Infof("Using ANU Quantum Random Numbers service (https://qrng.anu.edu.au)")
 		log.Tracef("Adding quantum RNG source to entropy pool")
-		sources = append(sources, NewQuantumRNG())
+		sources = append(sources, NewQuantumRand())
 	}
-	
+
 	log.Tracef("MultiRNG initialized with %d entropy sources", len(sources))
 
 	return &MultiRNG{

@@ -22,22 +22,19 @@ func TestRNGInterfaces(t *testing.T) {
 
 	// Test each RNG implementation
 	rngs := []RNG{
-		&CryptoRNG{},
-		NewMathRNG(),
-		NewDefaultRNG(ctx),
-		&TestRNG{},
+		NewCryptoRand(),
+		NewMathRand(),
+		NewDefaultRand(ctx),
+		NewTestRNG(0),
 		NewChaCha20Rand(),
 		NewPCG64Rand(),
 		NewMT19937Rand(),
 	}
 
 	for i, rng := range rngs {
-		n, err := rng.Read(ctx, buf)
+		err := rng.Read(ctx, buf)
 		if err != nil {
 			t.Errorf("RNG implementation %d failed to read random bytes: %v", i, err)
-		}
-		if n != len(buf) {
-			t.Errorf("RNG implementation %d returned short read: got %d, want %d", i, n, len(buf))
 		}
 	}
 }
@@ -53,19 +50,16 @@ func TestMultiRNGRandomness(t *testing.T) {
 	ctx = WithQuantumEnabled(ctx, false)
 
 	// Create a MultiRNG instance with quantum RNG disabled
-	rng := NewDefaultRNG(ctx)
+	rng := NewDefaultRand(ctx)
 
 	// Test buffer (larger sample for statistical tests)
 	const bufSize = 100000
 	buf := make([]byte, bufSize)
 
 	// Get random bytes
-	n, err := rng.Read(ctx, buf)
+	err := rng.Read(ctx, buf)
 	if err != nil {
 		t.Fatalf("MultiRNG read failed: %v", err)
-	}
-	if n != bufSize {
-		t.Fatalf("MultiRNG returned short read: got %d, want %d", n, bufSize)
 	}
 
 	// Run statistical tests on the output
