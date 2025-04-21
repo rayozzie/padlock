@@ -80,6 +80,170 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
 - **Defense in Depth:**
   The random number generation system combines multiple independent sources of entropy to ensure high-quality randomness even if some sources are compromised.
 
+### Security Analysis
+
+#### Random Number Generation
+
+Padlock implements a robust defense-in-depth approach to random number generation, which is critical for one-time pad security:
+
+1. **Multi-Source RNG Architecture**
+   - `MultiRNG` combines five independent random sources through XOR operations
+   - Security depends only on the strongest uncompromised source
+   - Even if multiple sources are compromised, data remains secure as long as at least one source remains uncompromised
+   - Implementation includes:
+     - `CryptoRand`: OS entropy pool (primary source)
+     - `MathRand`: Securely seeded PRNG
+     - `ChaCha20Rand`: Stream cipher with random key/nonce
+     - `PCG64Rand`: High-quality statistical PRNG
+     - `MT19937Rand`: Mersenne Twister with secure seed
+
+2. **Randomness Quality Validation**
+   - Comprehensive test suite validates statistical properties:
+     - Frequency testing of bit distribution
+     - Runs test for sequential patterns
+     - Byte distribution uniformity verification
+     - Shannon entropy measurement
+     - Autocorrelation testing
+     - Chi-square testing
+   - All RNG providers use mutex locks to ensure thread safety
+   - Detailed error handling prevents the use of low-quality randomness
+
+#### K-of-N Implementation
+
+Padlock uses a mathematical approach to K-of-N threshold security:
+
+1. **Combinatorial Design**
+   - `UniqueSortedCombinations` function generates all possible combinations of K elements from N elements
+   - Each collection participates in multiple permutations
+   - For each input chunk, K-1 random pads are generated
+   - XOR operations distribute data across collections so any K can reconstruct the original
+
+2. **Information-Theoretic Security**
+   - With fewer than K collections, no information about the original data is revealed
+   - The system provides perfect secrecy under the one-time pad model
+   - Security relies on mathematical properties rather than computational hardness assumptions
+   - Each collection appears completely random when viewed in isolation
+
+#### One-Time Pad Generation and Usage
+
+1. **Pad Generation**
+   - Each chunk generates unique random pads for every permutation
+   - Pad sizes match the input data exactly
+   - Pads are never reused across chunks or collections
+   - The `encodeOneChunk` function handles the core cryptographic operations
+
+2. **XOR-Based Cryptography**
+   - Simple XOR operations provide mathematically provable security
+   - Implementation is straightforward and auditable
+   - Avoids complex cryptographic primitives that could introduce vulnerabilities
+   - The approach is quantum-resistant by design
+
+#### Data Formats and Error Handling
+
+1. **Storage Formats**
+   - Binary (.bin) format for efficiency
+   - PNG (.PNG) format for steganographic storage with CRC validation
+   - PNG implementation includes data integrity checks via CRC32
+
+2. **Error Detection**
+   - Chunk headers contain collection names and sizes for verification
+   - Collection naming convention provides self-verification
+   - Format-specific integrity checks during decoding
+   - Detailed error reporting for troubleshooting
+
+#### Handling Incorrect or Corrupted Data
+
+1. **Collection Verification**
+   - System verifies collection names, required copies, and total copies
+   - Mismatched parameters trigger explicit errors during decoding
+   - Collections can be provided in any order during decoding
+
+2. **Corruption Handling**
+   - PNG format includes CRC32 validation to detect modifications
+   - If fewer than K collections are provided, decoding mathematically fails
+   - If collections are modified or corrupted:
+     - Header or CRC checks fail, producing errors
+     - Successful decoding with corrupted data produces garbage output that's indistinguishable from random data
+
+#### Security Boundaries
+
+1. **Limitations**
+   - Security depends entirely on the quality of random number generation
+   - Physical security of collections becomes the primary concern
+   - No verification of original data integrity beyond successful reconstruction
+
+2. **Threat Model Considerations**
+   - Designed to protect against computational threats including quantum computers
+   - Does not protect against insider threats with access to K or more collections
+   - No protection against side-channel attacks during encoding/decoding operations
+
+This implementation achieves information-theoretic security through a clean, auditable design that relies on well-understood mathematical principles rather than complex cryptographic primitives.
+
+### Mathematical Foundations
+
+#### Combinatorial Security Architecture
+
+The K-of-N threshold scheme is built on rigorous combinatorial mathematics:
+
+1. **Combinatorial Distribution**
+   - For N collections where any K are needed, there are C(N,K) = N!/(K!(N-K)!) possible combinations
+   - Each collection participates in exactly C(N-1,K-1) different permutations
+   - With N=5, K=3, there are 10 unique permutations, and each collection appears in 6 permutations
+   - This mathematical structure guarantees that any K collections contain at least one complete permutation
+
+2. **XOR Properties Leveraged**
+   - XOR is commutative: A ⊕ B = B ⊕ A
+   - XOR is associative: (A ⊕ B) ⊕ C = A ⊕ (B ⊕ C)
+   - XOR with the same value twice cancels out: A ⊕ B ⊕ B = A
+   - XOR with random data produces random data: If B is truly random, then A ⊕ B is indistinguishable from random
+
+3. **Perfect Reconstruction Properties**
+   - For a permutation involving K collections (e.g., ABC):
+     - Collection A stores random pad P_A
+     - Collection B stores random pad P_B
+     - Collection C stores C_data = D ⊕ P_A ⊕ P_B (where D is original data)
+   - During decoding: P_A ⊕ P_B ⊕ C_data = P_A ⊕ P_B ⊕ (D ⊕ P_A ⊕ P_B) = D
+   - XOR operations perfectly cancel out, leaving only the original data
+
+#### Information-Theoretic Security Analysis
+
+1. **Mathematical Proof of Threshold Properties**
+   - With K-1 or fewer collections, the system of equations is underdetermined
+   - For each missing piece, there are 2^n possible values (for n-bit data), all equally likely
+   - This creates perfect statistical independence between available and missing pieces
+   - The proof follows Claude Shannon's original work on information theory and perfect secrecy
+
+2. **Statistical Independence**
+   - Each collection in isolation appears completely random
+   - No correlation exists between collections when viewed separately
+   - The XOR of random data with any fixed data produces statistically random output
+   - This guarantees that partial collection sets reveal zero information about the original data
+
+#### Deep Algorithm Analysis
+
+1. **Encoding Process Mechanics**
+   ```
+   For each chunk of data D:
+     For each permutation P of K collections (e.g., ABC):
+       Generate K-1 random pads R_1, R_2, ..., R_(K-1)
+       Compute ciphertext C = D ⊕ R_1 ⊕ R_2 ⊕ ... ⊕ R_(K-1)
+       Distribute D, R_1, R_2, ..., R_(K-1) across the K collections
+   ```
+
+2. **Permutation Generation Process**
+   - Uses recursive backtracking to generate all K-sized combinations from N elements
+   - Creates a deterministic mapping between collections and permutations
+   - Ensures each collection has precisely the correct pieces for reconstruction
+   - Runtime complexity is O(C(N,K)), which is polynomial for fixed K
+
+3. **Chunking Security Benefits**
+   - Enables efficient streaming processing of arbitrary-sized inputs
+   - Provides natural boundaries for error containment
+   - Ensures independence between chunks (compromise of one doesn't affect others)
+   - Allows for piece-wise verification during reconstruction
+
+The mathematical elegance of this system lies in its perfect balance between redundancy and security. With exactly K-1 collections, an attacker gains absolutely zero information about the data - not just computational difficulty, but mathematical impossibility. This property holds regardless of computing power, including theoretical quantum computers, making it a future-proof security approach for protecting critical data.
+
 ## Installation and Usage
 
 ### Requirements

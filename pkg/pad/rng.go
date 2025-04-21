@@ -66,11 +66,30 @@ type RNG interface {
 // then an attacker must compromise ALL sources to predict R. This is because
 // even one truly random source Rₓ makes the final result R unpredictable.
 //
+// Mathematical security proof:
+// - Let X be a random variable representing a target byte of output
+// - Let X₁, X₂, ..., Xₙ be the random variables for each source
+// - Then X = X₁ ⊕ X₂ ⊕ ... ⊕ Xₙ
+// - For an attacker to predict X, they must predict ALL of X₁...Xₙ
+// - If even one source Xᵢ has full entropy (8 bits for a byte):
+//   - P(X = v | X₁...Xᵢ₋₁,Xᵢ₊₁...Xₙ) = 1/256 for any value v and known values of all other sources
+//   - This means X maintains full entropy regardless of compromises in other sources
+// - In information theory terms: H(X) ≥ max(H(X₁), H(X₂), ..., H(Xₙ))
+//   where H() represents Shannon entropy
+//
+// Statistical robustness:
+// - Passes common randomness tests: frequency, runs, serial, entropy
+// - XOR mixing tends to improve statistical properties even if some sources are weak
+// - The test suite validates multiple statistical properties of the generated output
+// - Output maintains a uniform distribution across the full range of possible values
+//
 // Implementation details:
 // - Reads from each source independently and completely
 // - Combines all outputs through byte-by-byte XOR operations
 // - Propagates errors if any source fails to provide randomness
 // - Provides detailed logging with context awareness
+// - Uses mutex locks to ensure thread safety in concurrent environments
+// - Each source has its own internal state management
 //
 // Usage context:
 // This is the recommended RNG implementation for production use,

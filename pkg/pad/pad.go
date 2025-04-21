@@ -294,6 +294,19 @@ func extractFromChunkName(chunkName string) (collName string, chunkNumber int, c
 // foundation for the threshold properties. It generates all combinations of K elements from
 // a set of N elements, organized in a way that enables efficient encoding and decoding.
 //
+// Mathematical properties:
+// - Generates exactly C(N,K) = N!/(K!(N-K)!) unique combinations
+// - Each collection participates in exactly C(N-1,K-1) different permutations
+// - Guarantees that any K collections contain at least one complete permutation
+// - Creates a deterministic mapping between collections and permutations
+//
+// Security implications:
+// - With K-1 or fewer collections, no permutation can be completed
+// - The system of equations becomes underdetermined with fewer than K collections
+// - This creates an information-theoretic security boundary (not just computational)
+// - The combinatorial structure ensures uniform data distribution across collections
+// - Collection pieces maintain statistical independence when viewed separately
+//
 // Returns:
 //  1. int – number of combinations each label (collection) participates in
 //  2. map[string][]string – all sorted K-of-N combinations that include each label
@@ -311,6 +324,10 @@ func extractFromChunkName(chunkName string) (collName string, chunkNumber int, c
 // During encoding, these structures are used to distribute data across collections in a way
 // that ensures the threshold security properties. During decoding, they are used to recombine
 // the data from K or more collections to reconstruct the original information.
+//
+// The algorithm uses recursive backtracking to efficiently generate all combinations,
+// with O(C(N,K)) complexity. For typical values of K and N (K≤N≤26), this is highly efficient.
+// The sorting of combinations ensures deterministic behavior across different platforms.
 func UniqueSortedCombinations(K, N int) (int, map[string][]string, map[string][][]byte) {
 	// Create labels for each collection (A, B, C, ...)
 	labels := make([]string, N)
@@ -449,6 +466,15 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 // - An attacker with K-1 collections learns absolutely nothing about P (information-theoretic security)
 // - Each collection's content appears completely random when viewed in isolation
 //
+// Information-theoretic security proof:
+// - Each permutation creates a system of K equations where K unknowns must be solved
+// - With only K-1 collections available, the system becomes underdetermined
+// - For each missing piece, there are 2^n possible values (for n-bit data) all equally likely
+// - This results in perfect indistinguishability - every possible plaintext is equally probable 
+// - Claude Shannon's perfect secrecy condition is satisfied: P(C|M) = P(C), meaning the ciphertext
+//   probability distribution is independent of the plaintext message
+// - This is mathematically provable and doesn't rely on computational hardness assumptions
+//
 // Parameters:
 //   - ctx: Context for logging, cancellation, and tracing
 //   - chunkData: The input data to encode (may be less than a full chunk at the end of the stream)
@@ -462,6 +488,9 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 //   - The segment distribution ensures that fewer than K collections reveal nothing about the data
 //   - Each collection receives data that appears completely random when viewed in isolation
 //   - The security depends entirely on the randomness quality - weak randomness breaks the system
+//   - XOR distribution creates combinatorially secure threshold guarantees
+//   - System has mathematical, not just computational, security guarantees
+//   - Security level is independent of chunk size - even 1-byte chunks have perfect secrecy
 func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, chunkNumber int, randomSource RNG, newChunk NewChunkFunc, chunkFormat string) error {
 	log := trace.FromContext(ctx).WithPrefix("ENCODE")
 
