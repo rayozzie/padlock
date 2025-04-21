@@ -76,20 +76,20 @@ func TestStreamBasedRNG(t *testing.T) {
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
 	ctx = trace.WithContext(ctx, tracer)
-	
+
 	// Create a context with quantum RNG disabled
 	ctx = WithQuantumEnabled(ctx, false)
-	
+
 	// Create a MultiRNG instance
 	rng := NewDefaultRand(ctx)
-	
+
 	// Set up multiple buffers to simulate streaming
 	const bufSize = 1024
 	buffers := make([][]byte, 10)
 	for i := range buffers {
 		buffers[i] = make([]byte, bufSize)
 	}
-	
+
 	// Generate random bytes in multiple calls (simulating streaming)
 	for i := range buffers {
 		err := rng.Read(ctx, buffers[i])
@@ -97,16 +97,16 @@ func TestStreamBasedRNG(t *testing.T) {
 			t.Fatalf("MultiRNG read failed on buffer %d: %v", i, err)
 		}
 	}
-	
+
 	// Combine all buffers for statistical analysis
 	combinedBuffer := make([]byte, bufSize*len(buffers))
 	for i, buf := range buffers {
 		copy(combinedBuffer[i*bufSize:], buf)
 	}
-	
+
 	// Run statistical tests on the combined output
 	runRandomnessTests(t, "MultiRNG-Stream", combinedBuffer)
-	
+
 	// Verify that each buffer has different content (not duplicated)
 	for i := 0; i < len(buffers)-1; i++ {
 		if bytes.Equal(buffers[i], buffers[i+1]) {

@@ -66,8 +66,8 @@ func TestNewPad(t *testing.T) {
 // It's a direct test of the encode/decode functionality with in-memory buffers only
 func TestPadStreamEncodeDecode(t *testing.T) {
 	const (
-		n         = 5  // total copies
-		k         = 3  // required copies
+		n         = 5    // total copies
+		k         = 3    // required copies
 		inputSize = 1024 // size of test data
 	)
 
@@ -132,23 +132,23 @@ func TestPadStreamEncodeDecode(t *testing.T) {
 
 	// Verify the output
 	output := outputBuffer.Bytes()
-	
+
 	// With our threshold scheme, we expect to get exactly the original data back
 	if len(output) != len(input) {
 		t.Errorf("Output length (%d) doesn't match input length (%d)", len(output), len(input))
 	} else {
 		t.Logf("Successfully decoded %d bytes", len(output))
-		
+
 		// Compare the first 20 bytes (or fewer if the data is smaller)
 		compareLen := min(20, len(output))
 		t.Logf("First %d bytes of input: %v", compareLen, input[:compareLen])
 		t.Logf("First %d bytes of output: %v", compareLen, output[:compareLen])
-		
+
 		// With the threshold scheme we're using, we expect output to be valid data
 		// but not necessarily identical to the input due to the way permutations work.
 		// The successful decode is the important part of this test.
 		t.Logf("Decode of streamed data completed successfully")
-		
+
 		// Statistical check on the output data randomness
 		var zeroBits, oneBits int
 		for _, b := range output {
@@ -160,9 +160,9 @@ func TestPadStreamEncodeDecode(t *testing.T) {
 				}
 			}
 		}
-		
+
 		t.Logf("Output statistics: %d zero bits, %d one bits", zeroBits, oneBits)
-		
+
 		// The output should have a reasonable distribution of bits
 		totalBits := zeroBits + oneBits
 		if totalBits > 0 {

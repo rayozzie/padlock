@@ -138,32 +138,32 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 //
 // Current implementation includes:
 // 1. A cryptographically secure RNG from crypto/rand (OS-level entropy source)
-//    - Uses the operating system's entropy pool (/dev/urandom or CryptGenRandom)
-//    - Considered the primary and most secure source
-// 
+//   - Uses the operating system's entropy pool (/dev/urandom or CryptGenRandom)
+//   - Considered the primary and most secure source
+//
 // 2. A pseudo-random generator securely seeded from crypto/rand
-//    - math/rand PRNG with a high-entropy seed from the OS entropy source
-//    - Provides computational efficiency while maintaining security
-// 
+//   - math/rand PRNG with a high-entropy seed from the OS entropy source
+//   - Provides computational efficiency while maintaining security
+//
 // 3. ChaCha20 stream cipher with random key and nonce
-//    - Modern, high-performance cryptographic algorithm
-//    - Resistant to known cryptanalytic attacks
-//    - Different security properties from the other sources
-// 
+//   - Modern, high-performance cryptographic algorithm
+//   - Resistant to known cryptanalytic attacks
+//   - Different security properties from the other sources
+//
 // 4. PCG64 PRNG with secure seed
-//    - High-quality, statistically robust pseudo-random number generator
-//    - Addresses potential weaknesses in simpler PRNGs
-//    - Provides excellent statistical properties with high period
-// 
+//   - High-quality, statistically robust pseudo-random number generator
+//   - Addresses potential weaknesses in simpler PRNGs
+//   - Provides excellent statistical properties with high period
+//
 // 5. Mersenne Twister PRNG with secure seed
-//    - Well-studied PRNG with extremely long period
-//    - Provides additional diversity in the randomness sources
-// 
+//   - Well-studied PRNG with extremely long period
+//   - Provides additional diversity in the randomness sources
+//
 // 6. ANU Quantum Random Numbers service (optional, enabled with -quantum-anu flag)
-//    - True randomness derived from quantum vacuum fluctuations
-//    - Provided by the Australian National University
-//    - Independent of classical computation-based sources
-//    - Offers resistance against theoretical attacks on classical RNGs
+//   - True randomness derived from quantum vacuum fluctuations
+//   - Provided by the Australian National University
+//   - Independent of classical computation-based sources
+//   - Offers resistance against theoretical attacks on classical RNGs
 //
 // Security properties:
 // - Information-theoretic security (assuming at least one good source)

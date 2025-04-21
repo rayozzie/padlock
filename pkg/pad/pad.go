@@ -295,11 +295,11 @@ func extractFromChunkName(chunkName string) (collName string, chunkNumber int, c
 // a set of N elements, organized in a way that enables efficient encoding and decoding.
 //
 // Returns:
-// 1. int – number of combinations each label (collection) participates in
-// 2. map[string][]string – all sorted K-of-N combinations that include each label
-//    (maps collection letter to all permutations it participates in)
-// 3. map[string][][]byte – all unique K-of-N combinations, initialized as empty byte slices
-//    (maps permutation key to array of byte slices that will hold the actual data)
+//  1. int – number of combinations each label (collection) participates in
+//  2. map[string][]string – all sorted K-of-N combinations that include each label
+//     (maps collection letter to all permutations it participates in)
+//  3. map[string][][]byte – all unique K-of-N combinations, initialized as empty byte slices
+//     (maps permutation key to array of byte slices that will hold the actual data)
 //
 // For example, with K=2, N=3 (labels A, B, C):
 // - Generates combinations: [AB, AC, BC]
@@ -345,10 +345,10 @@ func UniqueSortedCombinations(K, N int) (int, map[string][]string, map[string][]
 	for _, combo := range allCombos {
 		// Create a unique string key for this combination (e.g., "ABC")
 		joined := strings.Join(combo, "")
-		
+
 		// Initialize the byte slices array for this combination
 		uniqueMap[joined] = make([][]byte, K)
-		
+
 		// For each label in this combination, add the combination to its list
 		for _, label := range combo {
 			result[label] = append(result[label], joined)
@@ -434,14 +434,14 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 // distribution of data across collections.
 //
 // Mathematical overview:
-// 1. Let P be the plaintext (original data chunk)
-// 2. For each permutation i of K collections (e.g., "ABC", "ABD", ...):
-//    a. Generate K-1 truly random pads R_1, R_2, ..., R_(K-1)
-//    b. Compute the ciphertext C = P ⊕ R_1 ⊕ R_2 ⊕ ... ⊕ R_(K-1)
-//        (where ⊕ represents the XOR operation)
-//    c. Distribute P, R_1, R_2, ..., R_(K-1) across the K collections in that permutation
-//       such that each collection gets a different piece
-// 3. Each collection ends up with multiple pieces from different permutations
+//  1. Let P be the plaintext (original data chunk)
+//  2. For each permutation i of K collections (e.g., "ABC", "ABD", ...):
+//     a. Generate K-1 truly random pads R_1, R_2, ..., R_(K-1)
+//     b. Compute the ciphertext C = P ⊕ R_1 ⊕ R_2 ⊕ ... ⊕ R_(K-1)
+//     (where ⊕ represents the XOR operation)
+//     c. Distribute P, R_1, R_2, ..., R_(K-1) across the K collections in that permutation
+//     such that each collection gets a different piece
+//  3. Each collection ends up with multiple pieces from different permutations
 //
 // Security properties:
 // - With K or more collections, all pieces can be XORed together to recover P

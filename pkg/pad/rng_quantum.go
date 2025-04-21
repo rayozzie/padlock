@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -98,10 +99,10 @@ type QuantumRand struct {
 func NewQuantumRand() *QuantumRand {
 	return &QuantumRand{
 		apiURL:         "https://qrng.anu.edu.au/API/jsonI.php",
-		client:         &http.Client{Timeout: 10 * time.Second},
+		client:         &http.Client{Timeout: 30 * time.Second},
 		cache:          make([]byte, 0, 1024),
-		maxCacheSize:   8192, // 8KB cache
-		maxRequestSize: 1024, // Request 1024 bytes at a time (API limit)
+		maxCacheSize:   1024 * 1024, // 1MB cache to reduce API calls
+		maxRequestSize: 100 * 1024,  // Request 100KB at a time (larger to reduce API calls)
 	}
 }
 
@@ -111,7 +112,7 @@ func (q *QuantumRand) Name() string {
 }
 
 // Read implements the RNG interface by fetching quantum random numbers from the ANU QRNG API.
-// It handles caching to reduce network calls.
+// It handles caching to reduce network calls and includes retry logic for handling rate limits.
 func (q *QuantumRand) Read(ctx context.Context, p []byte) error {
 	log := trace.FromContext(ctx).WithPrefix("QUANTUM-RNG")
 
@@ -123,9 +124,25 @@ func (q *QuantumRand) Read(ctx context.Context, p []byte) error {
 	for bytesRead < len(p) {
 		// If the cache is empty, refill it
 		if len(q.cache) == 0 {
-			if err := q.refillCache(ctx, log); err != nil {
+			// First attempt to refill the cache
+			err := q.refillCache(ctx, log)
+			if err != nil {
 				log.Error(fmt.Errorf("quantum RNG refill failed: %w", err))
+
+				// Log a clear message to the user about the rate limiting
+				if strings.Contains(err.Error(), "rate limit") ||
+					strings.Contains(err.Error(), "requests per minute") ||
+					strings.Contains(err.Error(), "500") {
+					log.Infof("The quantum random number service is rate limited: %s", err.Error())
+					log.Infof("The system will automatically retry with exponential backoff.")
+				}
+
 				return fmt.Errorf("quantum RNG unavailable: %w", err)
+			}
+
+			// If we still have no data after refill (very unlikely but possible)
+			if len(q.cache) == 0 {
+				return fmt.Errorf("quantum RNG returned no data despite successful API call")
 			}
 		}
 
@@ -137,10 +154,16 @@ func (q *QuantumRand) Read(ctx context.Context, p []byte) error {
 		q.cache = q.cache[n:]
 	}
 
+	// Log success if we filled a decent amount of data
+	if len(p) > 1000 {
+		log.Debugf("Successfully provided %d bytes of quantum random data", len(p))
+	}
+
 	return nil
 }
 
 // refillCache fetches random bytes from the ANU QRNG API and stores them in the cache.
+// It implements a retry mechanism to handle rate limiting from the API.
 func (q *QuantumRand) refillCache(ctx context.Context, log *trace.Tracer) error {
 	// Determine how many bytes to request
 	bytesToRequest := q.maxCacheSize - len(q.cache)
@@ -155,66 +178,119 @@ func (q *QuantumRand) refillCache(ctx context.Context, log *trace.Tracer) error 
 
 	log.Debugf("Refilling quantum cache with %d bytes from API", bytesToRequest)
 
-	// Check for context cancellation
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		// Continue with the request
+	// Retry parameters
+	maxRetries := 10
+	baseRetryDelay := 15 * time.Second // API rate limit is 1 per minute, so we'll retry every 15 seconds
+
+	var lastErr error
+	// Retry loop
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check for context cancellation before each attempt
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			// Continue with the request
+		}
+
+		// If this is a retry, show a message to the user
+		if attempt > 1 {
+			log.Infof("QRNG API retry attempt %d/%d - waiting due to rate limiting (%.0f seconds)...",
+				attempt, maxRetries, baseRetryDelay.Seconds())
+
+			// Wait for the retry delay, but allow cancellation via context
+			select {
+			case <-time.After(baseRetryDelay):
+				// Continue after delay
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		// Prepare the request URL
+		url := fmt.Sprintf("%s?length=%d&type=uint8", q.apiURL, bytesToRequest)
+
+		// Create a new request with context
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to create request: %w", err)
+			continue // Retry
+		}
+
+		// Add appropriate headers
+		req.Header.Add("User-Agent", "Padlock-One-Time-Pad/1.0")
+		req.Header.Add("Accept", "application/json")
+
+		// Execute the request
+		resp, err := q.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("API request failed: %w", err)
+			continue // Retry
+		}
+
+		// Check the response status
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			errMsg := fmt.Sprintf("API returned non-OK status %d: %s", resp.StatusCode, body)
+
+			// Check specifically for rate limiting (this is the common error case)
+			if resp.StatusCode == 429 || resp.StatusCode == 500 {
+				if attempt < maxRetries {
+					// Log the API's error message prominently so the user can see it
+					log.Infof("%s", string(body))
+					log.Infof("Will retry in %.0f seconds (attempt %d/%d)...",
+						baseRetryDelay.Seconds(), attempt, maxRetries)
+					lastErr = fmt.Errorf("%s", errMsg)
+					continue // Retry on rate limiting
+				}
+			}
+
+			lastErr = fmt.Errorf("%s", errMsg)
+			return lastErr // Other error - don't retry
+		}
+
+		// Parse the response
+		var qResp quantomRandResponse
+		if err := json.NewDecoder(resp.Body).Decode(&qResp); err != nil {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("failed to decode API response: %w", err)
+			continue // Retry
+		}
+		resp.Body.Close()
+
+		// Verify the response
+		if !qResp.Success {
+			lastErr = fmt.Errorf("API reported non-success status")
+			continue // Retry
+		}
+		if qResp.Type != "uint8" {
+			lastErr = fmt.Errorf("unexpected data type in response: %s", qResp.Type)
+			continue // Retry
+		}
+		if len(qResp.Data) == 0 {
+			lastErr = fmt.Errorf("API returned empty data array")
+			continue // Retry
+		}
+
+		// Convert the uint array to bytes and add to cache
+		newBytes := make([]byte, len(qResp.Data))
+		for i, val := range qResp.Data {
+			newBytes[i] = byte(val)
+		}
+
+		// Append the new bytes to our cache
+		q.cache = append(q.cache, newBytes...)
+		log.Debugf("Successfully added %d quantum random bytes to cache", len(newBytes))
+
+		if attempt > 1 {
+			log.Infof("QRNG API successfully responded after %d retries", attempt-1)
+		}
+
+		return nil // Success!
 	}
 
-	// Prepare the request URL
-	url := fmt.Sprintf("%s?length=%d&type=uint8", q.apiURL, bytesToRequest)
-
-	// Create a new request with context
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Add appropriate headers
-	req.Header.Add("User-Agent", "Padlock-One-Time-Pad/1.0")
-	req.Header.Add("Accept", "application/json")
-
-	// Execute the request
-	resp, err := q.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check the response status
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API returned non-OK status %d: %s", resp.StatusCode, body)
-	}
-
-	// Parse the response
-	var qResp quantomRandResponse
-	if err := json.NewDecoder(resp.Body).Decode(&qResp); err != nil {
-		return fmt.Errorf("failed to decode API response: %w", err)
-	}
-
-	// Verify the response
-	if !qResp.Success {
-		return fmt.Errorf("API reported non-success status")
-	}
-	if qResp.Type != "uint8" {
-		return fmt.Errorf("unexpected data type in response: %s", qResp.Type)
-	}
-	if len(qResp.Data) == 0 {
-		return fmt.Errorf("API returned empty data array")
-	}
-
-	// Convert the uint array to bytes and add to cache
-	newBytes := make([]byte, len(qResp.Data))
-	for i, val := range qResp.Data {
-		newBytes[i] = byte(val)
-	}
-
-	// Append the new bytes to our cache
-	q.cache = append(q.cache, newBytes...)
-	log.Debugf("Successfully added %d quantum random bytes to cache", len(newBytes))
-
-	return nil
+	// If we reached here, all retries failed
+	return fmt.Errorf("quantum RNG API failed after %d retries: %w", maxRetries, lastErr)
 }
