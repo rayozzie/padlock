@@ -47,10 +47,7 @@ func TestMultiRNGRandomness(t *testing.T) {
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
 	ctx = trace.WithContext(ctx, tracer)
 
-	// Create a context with quantum RNG disabled
-	ctx = WithQuantumEnabled(ctx, false)
-
-	// Create a MultiRNG instance with quantum RNG disabled
+	// Create a MultiRNG instance
 	rng := NewDefaultRand(ctx)
 
 	// Test buffer (larger sample for statistical tests)
@@ -76,9 +73,6 @@ func TestStreamBasedRNG(t *testing.T) {
 	ctx := context.Background()
 	tracer := trace.NewTracer("TEST", trace.LogLevelVerbose)
 	ctx = trace.WithContext(ctx, tracer)
-
-	// Create a context with quantum RNG disabled
-	ctx = WithQuantumEnabled(ctx, false)
 
 	// Create a MultiRNG instance
 	rng := NewDefaultRand(ctx)

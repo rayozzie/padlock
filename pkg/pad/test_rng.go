@@ -2,7 +2,6 @@ package pad
 
 import (
 	"context"
-	"fmt"
 )
 
 // TestRNG is a deterministic RNG implementation for testing purposes.
@@ -32,11 +31,6 @@ func (r *TestRNG) Name() string {
 // Read implements the RNG interface with a deterministic, counter-based
 // random number generator suitable for testing.
 func (r *TestRNG) Read(ctx context.Context, p []byte) (err error) {
-	// For testing the quantum enabled flag
-	if ctx.Value("simulateQuantum") != nil && !IsQuantumEnabled(ctx) {
-		return fmt.Errorf("quantum RNG disabled in test")
-	}
-
 	// Normal behavior: fill the buffer with sequential counter values
 	for i := range p {
 		p[i] = r.counter

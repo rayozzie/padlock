@@ -13,16 +13,14 @@ type LogLevel int
 const (
 	// LogLevelNormal for regular user-facing messages
 	LogLevelNormal LogLevel = iota
-	// LogLevelVerbose for detailed debug/trace info
+	// LogLevelVerbose for detailed debug/trace info (includes all trace information)
 	LogLevelVerbose
-	// LogLevelTrace for maximum verbosity with full trace output
-	LogLevelTrace
 )
 
 // TracerKey is the key type used for storing tracers in context
 type TracerKey struct{}
 
-// Legacy key type for backwards compatibility
+// Alternative key type for context value access
 type traceKeyType string
 
 const traceKey traceKeyType = "tracer"
@@ -43,9 +41,9 @@ func NewTracer(prefix string, level LogLevel) *Tracer {
 	}
 }
 
-// Tracef logs a message at the TRACE level (most verbose)
+// Tracef logs a message at the TRACE level (included in verbose output)
 func (t *Tracer) Tracef(format string, args ...interface{}) {
-	if t.level < LogLevelTrace {
+	if !t.verbose {
 		return
 	}
 	msg := fmt.Sprintf(format, args...)
@@ -54,18 +52,18 @@ func (t *Tracer) Tracef(format string, args ...interface{}) {
 
 // WithContext adds the tracer to the given context
 func WithContext(ctx context.Context, tracer *Tracer) context.Context {
-	// Store with both the new TracerKey and the legacy traceKey for backward compatibility
+	// Store with both key types for consistent access patterns
 	ctx = context.WithValue(ctx, TracerKey{}, tracer)
 	return context.WithValue(ctx, traceKey, tracer)
 }
 
 // FromContext extracts the tracer from the context
 func FromContext(ctx context.Context) *Tracer {
-	// Try the new TracerKey first
+	// Check for tracer using struct key
 	if tracer, ok := ctx.Value(TracerKey{}).(*Tracer); ok {
 		return tracer
 	}
-	// Fall back to legacy key
+	// Try alternative key format
 	if tracer, ok := ctx.Value(traceKey).(*Tracer); ok {
 		return tracer
 	}

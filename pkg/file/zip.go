@@ -167,7 +167,7 @@ func ExtractZipCollection(ctx context.Context, zipPath string, tempDir string) (
 	return collectionDir, nil
 }
 
-// CleanupCollectionDirectory removes a collection directory after it has been zipped
+// CleanupCollectionDirectory removes a collection directory once zipping is complete
 func CleanupCollectionDirectory(ctx context.Context, collPath string) error {
 	log := trace.FromContext(ctx).WithPrefix("ZIP")
 

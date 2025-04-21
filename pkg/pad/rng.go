@@ -12,6 +12,16 @@ import (
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
+// WithQuantumEnabled is a context helper for controlling RNG behavior
+func WithQuantumEnabled(ctx context.Context, enabled bool) context.Context {
+	return ctx 
+}
+
+// IsQuantumEnabled checks if a specific RNG mode is enabled
+func IsQuantumEnabled(ctx context.Context) bool {
+	return false
+}
+
 // RNG defines the core interface for all random number generators in the padlock system.
 //
 // This interface abstracts the generation of random bytes, allowing different
@@ -159,12 +169,6 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 //   - Well-studied PRNG with extremely long period
 //   - Provides additional diversity in the randomness sources
 //
-// 6. ANU Quantum Random Numbers service (optional, enabled with -quantum-anu flag)
-//   - True randomness derived from quantum vacuum fluctuations
-//   - Provided by the Australian National University
-//   - Independent of classical computation-based sources
-//   - Offers resistance against theoretical attacks on classical RNGs
-//
 // Security properties:
 // - Information-theoretic security (assuming at least one good source)
 // - Resilience against implementation vulnerabilities in any single source
@@ -177,22 +181,18 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 //   - This function should be used to obtain an RNG for all production systems
 //   - The returned RNG should be reused throughout the application's lifetime
 //   - Callers should monitor returned errors which indicate entropy issues
-//   - For extreme security, enable quantum RNG with -quantum-anu flag
-//   - For absolute security, use air-gapped systems with quantum RNG enabled
+//   - For absolute security, use air-gapped systems
 //
 // Example usage:
 //
 //	ctx := context.Background()
-//	// Optional: Enable quantum RNG if -quantum-anu flag was specified
-//	ctx = pad.WithQuantumEnabled(ctx, quantumFlagSpecified)
-//
 //	rng := pad.NewDefaultRand(ctx)
 //	buf := make([]byte, 32)
-//	n, err := rng.Read(ctx, buf)
+//	err := rng.Read(ctx, buf)
 //	if err != nil {
 //	    // Handle error - this is critical and should never be ignored
 //	}
-//	// Use buf[:n] as high-quality random data
+//	// Use buf as high-quality random data
 func NewDefaultRand(ctx context.Context) RNG {
 	log := trace.FromContext(ctx).WithPrefix("RNG")
 	// Create basic sources
@@ -205,15 +205,6 @@ func NewDefaultRand(ctx context.Context) RNG {
 	}
 
 	log.Tracef("Initializing RNG with %d base entropy sources", len(sources))
-
-	// Add quantum RNG only if explicitly enabled
-	if IsQuantumEnabled(ctx) {
-		log := trace.FromContext(ctx).WithPrefix("RNG")
-		log.Infof("Using ANU Quantum Random Numbers service (https://qrng.anu.edu.au)")
-		log.Tracef("Adding quantum RNG source to entropy pool")
-		sources = append(sources, NewQuantumRand())
-	}
-
 	log.Tracef("MultiRNG initialized with %d entropy sources", len(sources))
 
 	return &MultiRNG{

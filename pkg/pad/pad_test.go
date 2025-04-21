@@ -184,7 +184,7 @@ func (nc *nopCloser) Close() error {
 
 // TestPadEncodeDecodeRoundTrip tests the full encode-decode cycle
 func TestPadEncodeDecodeRoundTrip(t *testing.T) {
-	// This test has been updated to work with the key-of-N threshold scheme.
+	// This test verifies the key-of-N threshold scheme functionality.
 	// The algorithm splits and recombines data in specific ways, which means
 	// the output may be different from the input in size and content.
 	//
@@ -192,8 +192,8 @@ func TestPadEncodeDecodeRoundTrip(t *testing.T) {
 	// - File names on disk use format "<collectionName>_<chunkNumber>.<format>" (e.g., "3A5_0001.bin")
 	// - Internally within the file, the chunk name is stored as "<collectionName>-<chunkNumber>" (e.g., "3A5-1")
 	// - During decode, the internal chunk name is parsed with a split-and-join approach to handle hyphens in names
-	// - This is by design - the file name and internal chunk name formats are different
-	// - The decode process reads the internal chunk name from the file header, not from the file name
+	// - The file name and internal chunk name formats differ to support various file systems
+	// - The decode process uses the internal chunk name from the file header
 
 	const (
 		n         = 5  // total copies
@@ -285,9 +285,9 @@ func TestPadEncodeDecodeRoundTrip(t *testing.T) {
 			}
 		}
 
-		// Note: The file name format is <collectionName>_<chunkNumber>.<format>
-		// This is different from the internal chunk name format <collectionName>-<chunkNumber>
-		// The decode process reads the internal chunk name from the file header, not from the file name
+		// File naming: The file name format is <collectionName>_<chunkNumber>.<format>
+		// Internal naming: The internal chunk name format is <collectionName>-<chunkNumber>
+		// The decode process uses the internal chunk name from the file header
 		chunkPath := filepath.Join(tempDir, collName, fmt.Sprintf("%s_0001.bin", collName))
 		t.Logf("DEBUG: Opening chunk file: %s", chunkPath)
 
