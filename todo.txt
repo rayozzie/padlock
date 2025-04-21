@@ -1,3 +1,0 @@
-- scan all source code and code review
-- security analysis
-- have chatgpt analyze for security bugs
