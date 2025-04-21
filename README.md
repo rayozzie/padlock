@@ -1,6 +1,6 @@
 # Padlock: A One-Time-Pad K-of-N Data Encoding Utility
 
-**Padlock** is a high-performance, single-pass encoding and decoding utility that implements a threshold one-time-pad scheme for secure data storage and transmission. It splits data into encrypted chunks so that only a minimum number of collections (or “shares”) are required to recover the original content. By relying solely on secure random number generation and XOR operations, Padlock achieves information-theoretic security while remaining straightforward and fully streamable.
+**Padlock** is a high-performance, single-pass encoding and decoding utility that implements a threshold one-time-pad scheme for secure data storage and transmission. It splits data into encrypted chunks so that only a minimum number of collections (or "shares") are required to recover the original content. By relying solely on secure random number generation and XOR operations, Padlock achieves information-theoretic security while remaining straightforward and fully streamable.
 
 Except for this comment, Padlock was 100% vibe-coded by Ray Ozzie over the course of several days in April 2025 as a means of trying to understand the limits of the technique. For better or worse, this involved many hundreds of written instructions issued to multiple models over many hours, with corrections and rewrites.  Except for when using Devin, the process was needlessly painful because of the inability for the default UI's to natively integrate with my file system.  
 
@@ -22,21 +22,20 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
 - **Stream-Pipelined Processing:**  
   Both the encoding and decoding processes operate as fully streaming pipelines, processing the data chunk-by-chunk without needing to load the entire dataset into memory. This makes Padlock ideal for large-scale or real-time applications.
 
-- **Candidate Record Mode (No Additional Cryptography):**  
-  Instead of complex cryptographic algorithms, Padlock uses a candidate-record approach based solely on one-time-pad generation and XOR operations. For each input chunk:
-  - A random one-time pad is generated and XORed with the plaintext to produce ciphertext.
-  - Both the pad and the ciphertext are divided evenly into N segments.
-  - For every K‑subset of the N collections, a candidate record is created as follows:
-    - **Candidate ID:** A string of K letters representing the collections (for example, "ACE").
-    - **Left Half:** Contains the ciphertext segments for collections in the candidate set and the pad segments for the others.
-    - **Right Half:** Contains the pad segments for collections in the candidate set and the ciphertext segments for those not included.
-  - When the appropriate candidate record is used, XORing its left and right halves recovers the original plaintext.
+- **Information-Theoretic Security:**  
+  Instead of computational cryptography, Padlock uses a one-time-pad threshold scheme based on information theory. For each input chunk:
+  - For each permutation of K collections, the system:
+    - Generates K-1 random pads and XORs them with the plaintext to create a ciphertext
+    - Distributes the random pads and the ciphertext across the K collections in that permutation
+  - Each collection contains multiple pieces from different permutations
+  - When K or more collections are combined, the original data can be reconstructed
+  - With fewer than K collections, no information about the original data can be recovered
 
 - **Flexible Output Formats:**  
-  Candidate records are stored as individual files in one of two formats:
+  Data chunks are stored as individual files in one of two formats:
   - **PNG Files:** Files are named using the pattern  
     `IMG<collectionID>_<chunkNumber>.PNG`  
-    (for example, if the collection directory is “3C5”, the first candidate chunk file is named `IMG3C5_00001.PNG`).
+    (for example, if the collection directory is "3C5", the first chunk file is named `IMG3C5_00001.PNG`).
   - **Raw Binary Files (.bin):** Files are named with the format  
     `<collectionID>_<chunkNumber>.bin`
 
@@ -51,26 +50,22 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
    - **Archive & Compress:**  
      The input directory is archived using tar and optionally compressed using gzip.
    - **Chunking:**  
-     The compressed stream is divided into chunks. The user-specified chunk size defines the total size allocated for the candidate records (the “candidate block”) within each chunk.
-   - **Encryption via One-Time Pad:**  
-     For each chunk, a new random pad is generated and XORed with the plaintext chunk to generate the ciphertext.
-   - **Segmenting Data:**  
-     Both the pad and ciphertext are split into N equally sized segments.
-   - **Candidate Record Generation:**  
-     For every K‑subset of the N collections, a candidate record is built as follows:
-     - The record begins with a candidate ID (a string of K letters).
-     - It then comprises two halves (left and right), constructed from the pad and ciphertext segments as described above.
-     - A candidate block, starting with a record count, is built from all candidate records and is written to each collection’s directory.
+     The compressed stream is divided into chunks of a specified maximum size.
+   - **Threshold Encryption:**  
+     For each chunk, the system:
+     - Generates random one-time pads for each permutation of K collections
+     - XORs the input data with these pads to create ciphertexts
+     - Distributes the data across collections according to combinatorial mathematics
    - **Collection Organization:**  
-     Collections can be stored as directories or as ZIP archives. Each collection is named with a pattern that includes the required number (K), a collection letter, and the total number of copies (N).
+     Collections can be stored as directories or as ZIP archives. Each collection is named with a pattern that includes the required number (K), a collection letter, and the total number of copies (N) - for example, "3A5" for the first collection in a 3-of-5 scheme.
 
 2. **Decoding Process:**
    - **Collection Discovery:**  
      The available collection directories or ZIP files are identified. ZIP files are automatically extracted to a temporary directory for processing. The collection names (containing the required copies and total copies) are parsed to extract important parameters.
-   - **Candidate Record Selection:**  
-     The tool determines which candidate record to use based on the available collection letters. If fewer than the required number of collections are present, an error is reported.
+   - **Permutation Selection:**  
+     The system determines which permutation to use based on the available collections. If fewer than K collections are present, an error is reported since reconstruction is mathematically impossible.
    - **Data Reconstruction:**  
-     For each chunk, the appropriate candidate record is located. Its left and right halves are XORed to recover the original plaintext.
+     For each chunk, the appropriate permutation is used to combine pieces from K collections. The XOR operation reconstructs the original data from the distributed pieces.
    - **Extraction:**  
      The reassembled data is decompressed (if needed) and untarred to rebuild the original directory structure and files.
 
@@ -80,7 +75,10 @@ Grand conclusion? It was far, far too much work to rely upon the AI's to bring t
   As long as a new one-time pad is generated securely for each chunk and is never reused, the encryption provides information-theoretic (perfect) secrecy.
 
 - **Threshold Assurance:**  
-  The design guarantees that without access to at least the required number of collections, no useful information about the original data is revealed.
+  The design guarantees that without access to at least the required number K of collections, no useful information about the original data is revealed, regardless of the computational power available to an attacker.
+
+- **Defense in Depth:**
+  The random number generation system combines multiple independent sources of entropy (including an optional quantum source) to ensure high-quality randomness even if some sources are compromised.
 
 ## Installation and Usage
 
@@ -101,26 +99,28 @@ go build -o padlock cmd/padlock/main.go
 
 - **Encode:**
 
-  padlock encode <inputDir> <outputDir> -copies 5 -required 3 -format png -chunk 2097152 [-clear] [-verbose] [-zip]
+  padlock encode <inputDir> <outputDir> -copies 5 -required 3 -format png -chunk 2097152 [-clear] [-verbose] [-zip] [-quantum-anu]
 
   - `<inputDir>`: Directory containing the data to be archived and encoded.
   - `<outputDir>`: Destination directory for the generated collection subdirectories.
   - `-copies`: Number of collections to create (must be between 2 and 26).
   - `-required`: Minimum number of collections required for reconstruction.
   - `-format`: Output format, either "bin" or "png".
-  - `-chunk`: Candidate block size in bytes (total size allocated for candidate records in one chunk).
+  - `-chunk`: Maximum chunk size in bytes.
   - `-clear`: (Optional) Clears the output directory before encoding.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
   - `-zip`: (Optional) Creates ZIP archives for each collection instead of directories.
+  - `-quantum-anu`: (Optional) Use quantum randomness from ANU Quantum Random Numbers service.
 
 - **Decode:**
 
-  padlock decode <inputDir> <outputDir> [-clear] [-verbose]
+  padlock decode <inputDir> <outputDir> [-clear] [-verbose] [-quantum-anu]
 
   - `<inputDir>`: Root directory containing the collection subdirectories or ZIP files.
   - `<outputDir>`: Destination directory where the original data will be restored.
   - `-clear`: (Optional) Clears the output directory before decoding.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
+  - `-quantum-anu`: (Optional) Use quantum randomness from ANU Quantum Random Numbers service.
 
 **Important:**  
 Do not place the output directory within the input directory to avoid recursive processing. Also, ensure that the number of available collections meets or exceeds the required threshold; otherwise, an error will be displayed.
@@ -138,7 +138,8 @@ Do not place the output directory within the input directory to avoid recursive 
     - **serialize.go:** Directory serialization/deserialization to/from tar streams.
     - **compress.go:** Stream compression/decompression using gzip.
   - **pkg/pad/pad.go:** Core implementation of the one-time pad threshold scheme.
-  - **pkg/rng/rng.go:** Provides secure random number generation by combining crypto/rand with math/rand.
+  - **pkg/pad/rng.go:** Provides secure random number generation by combining multiple entropy sources.
+  - **pkg/pad/rng_quantum.go:** Optional quantum random number generation.
   - **pkg/trace/trace.go:** Context-based logging system for debug and trace information.
 
 ## Disclaimer

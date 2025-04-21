@@ -128,13 +128,42 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 // failure modes. It implements defense in depth by ensuring that even if some
 // randomness sources are compromised, the overall security remains intact.
 //
+// Security Architecture:
+// The random number generation system is designed with a defense-in-depth approach:
+//   - Multiple independent sources provide entropy from different algorithms
+//   - Each source is independently secured with cryptographically secure seeds
+//   - XOR mixing ensures that the final output is as secure as the strongest source
+//   - No single point of failure exists in the randomness generation
+//   - The system is resistant to both classical and quantum cryptanalysis
+//
 // Current implementation includes:
 // 1. A cryptographically secure RNG from crypto/rand (OS-level entropy source)
+//    - Uses the operating system's entropy pool (/dev/urandom or CryptGenRandom)
+//    - Considered the primary and most secure source
+// 
 // 2. A pseudo-random generator securely seeded from crypto/rand
+//    - math/rand PRNG with a high-entropy seed from the OS entropy source
+//    - Provides computational efficiency while maintaining security
+// 
 // 3. ChaCha20 stream cipher with random key and nonce
+//    - Modern, high-performance cryptographic algorithm
+//    - Resistant to known cryptanalytic attacks
+//    - Different security properties from the other sources
+// 
 // 4. PCG64 PRNG with secure seed
+//    - High-quality, statistically robust pseudo-random number generator
+//    - Addresses potential weaknesses in simpler PRNGs
+//    - Provides excellent statistical properties with high period
+// 
 // 5. Mersenne Twister PRNG with secure seed
+//    - Well-studied PRNG with extremely long period
+//    - Provides additional diversity in the randomness sources
+// 
 // 6. ANU Quantum Random Numbers service (optional, enabled with -quantum-anu flag)
+//    - True randomness derived from quantum vacuum fluctuations
+//    - Provided by the Australian National University
+//    - Independent of classical computation-based sources
+//    - Offers resistance against theoretical attacks on classical RNGs
 //
 // Security properties:
 // - Information-theoretic security (assuming at least one good source)
@@ -142,12 +171,14 @@ func (m *MultiRNG) Read(ctx context.Context, p []byte) error {
 // - Protection against entropy depletion or source failure
 // - Defense against both classical and quantum cryptanalysis
 // - Multiple independent entropy sources for maximum security
+// - Catastrophic failure requires compromising ALL entropy sources
 //
 // Usage recommendation:
 //   - This function should be used to obtain an RNG for all production systems
 //   - The returned RNG should be reused throughout the application's lifetime
 //   - Callers should monitor returned errors which indicate entropy issues
 //   - For extreme security, enable quantum RNG with -quantum-anu flag
+//   - For absolute security, use air-gapped systems with quantum RNG enabled
 //
 // Example usage:
 //

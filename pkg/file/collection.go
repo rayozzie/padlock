@@ -1,3 +1,14 @@
+// Package file provides the file system operations for the padlock cryptographic system.
+//
+// This package handles all interactions with the file system, including:
+// - Managing collections (creating, finding, zipping)
+// - Serializing and deserializing directories to/from streams
+// - Compressing and decompressing data
+// - Reading and writing data chunks in different formats
+//
+// It abstracts the underlying storage details away from the core cryptographic
+// functionality in the pad package, allowing the system to work with different
+// storage formats and approaches without changing the cryptographic logic.
 package file
 
 import (
@@ -12,11 +23,16 @@ import (
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
-// Collection represents a collection of encoded data
+// Collection represents a collection of encoded data in the padlock system.
+//
+// A collection is one of the N shares in the K-of-N threshold scheme. Each collection
+// contains chunks of encoded data that, when combined with chunks from K-1 other 
+// collections, can reconstruct the original data. Collections can be stored as
+// directories on disk or packaged as ZIP files for distribution.
 type Collection struct {
-	Name   string
-	Path   string
-	Format Format
+	Name   string // The name of the collection (e.g., "3A5")
+	Path   string // The filesystem path to the collection
+	Format Format // The format of the data chunks (binary or PNG)
 }
 
 // CreateCollections creates collection directories for the padlock scheme

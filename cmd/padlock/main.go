@@ -7,9 +7,23 @@
 // - K-1 or fewer collections reveal absolutely nothing about the original data
 // - Security depends entirely on the quality of randomness used
 //
+// The system employs a combination of Shamir's Secret Sharing principles and one-time pad
+// encryption. Unlike many cryptographic systems that rely on computational hardness,
+// padlock provides information-theoretic security, which means it is mathematically 
+// provably secure regardless of an attacker's computational resources.
+//
 // The command-line interface supports two main operations:
 // 1. encode: Split input data across N collections with K-of-N threshold security
 // 2. decode: Reconstruct original data using K or more collections
+//
+// Each collection contains chunks of data that, when combined with chunks from other
+// collections according to the threshold scheme, can reconstruct the original data.
+// Internally, the system:
+// - Serializes the input directory to a tar stream (optionally compressed)
+// - Processes the stream in chunks through a secure random number generator
+// - Applies one-time pad encryption with XOR operations
+// - Distributes the encrypted data across N collections using combinatorial mathematics
+// - Provides options for different output formats (binary or PNG)
 //
 // Usage examples:
 //
@@ -25,10 +39,15 @@
 //	# Create ZIP archives for each collection instead of directories
 //	padlock encode /path/to/input /path/to/output -zip
 //
+//	# Use quantum randomness for additional entropy
+//	padlock encode /path/to/input /path/to/output -quantum-anu
+//
 // Security considerations:
 // - Never reuse the same collections for different data (violates one-time pad security)
 // - Keep collections physically separated to reduce risk of compromise
 // - For maximum security, distribute collections through different channels/locations
+// - The system is only as secure as its random number generator
+// - For highest security, enable the quantum randomness option (-quantum-anu)
 package main
 
 import (

@@ -48,13 +48,23 @@ type NewChunkFunc func(collectionName string, chunkNumber int, chunkFormat strin
 // Pad represents the configuration for a one-time pad K-of-N threshold scheme operation.
 // It maintains the parameters for the threshold scheme and the names of the collections
 // that will be generated.
+//
+// The Pad is the core cryptographic component of the padlock system, implementing
+// the mathematical properties that allow data to be split into N collections, where
+// any K collections can reconstruct the original data, but K-1 or fewer collections
+// reveal absolutely nothing about the original data (information-theoretic security).
+//
+// The implementation uses combinatorial mathematics and XOR operations to achieve
+// the threshold properties. Each collection contains specific permutations of the data,
+// carefully constructed so that only with K or more collections can the permutations
+// be combined to recover the original data.
 type Pad struct {
 	TotalCopies      int                 // N: Total number of collections to create (2-26)
 	RequiredCopies   int                 // K: Minimum collections needed for reconstruction (2-N)
 	Collections      []string            // Names of each collection (e.g., ["3A5", "3B5", "3C5", ...])
 	PermutationCount int                 // Number of unique combinations for K-of-N
-	Permutations     map[string][]string // Unique combinations for each collection
-	Ciphers          map[string][][]byte // Unique K-of-N combinations as byte slices
+	Permutations     map[string][]string // Unique combinations for each collection (maps collection letter to array of permutations)
+	Ciphers          map[string][][]byte // Unique K-of-N combinations as byte slices (maps permutation key to array of byte slices)
 }
 
 // NewPadForEncode creates a new Pad instance with the specified parameters for a K-of-N threshold scheme.
@@ -278,46 +288,80 @@ func extractFromChunkName(chunkName string) (collName string, chunkNumber int, c
 	return collName, chunkNumber, chunkDataBytes, nil
 }
 
-// UniqueSortedCombinations returns:
-// 1. int – number of combinations each label participates in
+// UniqueSortedCombinations generates the combinatorial structures needed for the K-of-N threshold scheme.
+//
+// This function is a core part of the padlock cryptographic system, creating the mathematical
+// foundation for the threshold properties. It generates all combinations of K elements from
+// a set of N elements, organized in a way that enables efficient encoding and decoding.
+//
+// Returns:
+// 1. int – number of combinations each label (collection) participates in
 // 2. map[string][]string – all sorted K-of-N combinations that include each label
-// 3. map[string][][]byte – all unique K-of-N combinations, as a slice of byte slices
+//    (maps collection letter to all permutations it participates in)
+// 3. map[string][][]byte – all unique K-of-N combinations, initialized as empty byte slices
+//    (maps permutation key to array of byte slices that will hold the actual data)
+//
+// For example, with K=2, N=3 (labels A, B, C):
+// - Generates combinations: [AB, AC, BC]
+// - For label A: permutations = [AB, AC]
+// - For label B: permutations = [AB, BC]
+// - For label C: permutations = [AC, BC]
+// - uniqueMap contains entries for "AB", "AC", and "BC", each with 2 empty byte slices
+//
+// During encoding, these structures are used to distribute data across collections in a way
+// that ensures the threshold security properties. During decoding, they are used to recombine
+// the data from K or more collections to reconstruct the original information.
 func UniqueSortedCombinations(K, N int) (int, map[string][]string, map[string][][]byte) {
+	// Create labels for each collection (A, B, C, ...)
 	labels := make([]string, N)
 	for i := 0; i < N; i++ {
 		labels[i] = collectionLetterFromIndex(i)
 	}
 
+	// Initialize the result maps
 	result := make(map[string][]string, N)
 	uniqueMap := make(map[string][][]byte)
 
+	// Generate all K-combinations of N labels using recursive backtracking
 	var allCombos [][]string
 	var comb func(start int, path []string)
 	comb = func(start int, path []string) {
+		// If we have selected K labels, add this combination to our results
 		if len(path) == K {
 			c := make([]string, K)
 			copy(c, path)
 			allCombos = append(allCombos, c)
 			return
 		}
+		// Otherwise, try adding each remaining label and continue recursively
 		for i := start; i < N; i++ {
 			comb(i+1, append(path, labels[i]))
 		}
 	}
+	// Start the recursive generation
 	comb(0, nil)
 
+	// Process all generated combinations
 	for _, combo := range allCombos {
+		// Create a unique string key for this combination (e.g., "ABC")
 		joined := strings.Join(combo, "")
+		
+		// Initialize the byte slices array for this combination
 		uniqueMap[joined] = make([][]byte, K)
+		
+		// For each label in this combination, add the combination to its list
 		for _, label := range combo {
 			result[label] = append(result[label], joined)
 		}
 	}
 
+	// Sort the combinations for each label for deterministic behavior
 	for k := range result {
 		sort.Strings(result[k])
 	}
 
+	// Return the number of combinations each label participates in,
+	// the map of each label to its combinations, and the initialized uniqueMap
 	return len(result[labels[0]]), result, uniqueMap
 }
 
@@ -384,9 +428,26 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 
 // encodeOneChunk encodes a single chunk of data using the one-time pad threshold scheme.
 //
-// This function is the core implementation of the one-time pad encoding process for a single chunk.
-// It generates random pad data, XORs it with the input data, and distributes the results
-// across N collections according to the threshold scheme.
+// This function is the core cryptographic implementation of the K-of-N threshold scheme
+// for a single chunk of data. It implements the mathematical heart of the padlock system,
+// providing information-theoretic security through one-time pad encryption and combinatorial
+// distribution of data across collections.
+//
+// Mathematical overview:
+// 1. Let P be the plaintext (original data chunk)
+// 2. For each permutation i of K collections (e.g., "ABC", "ABD", ...):
+//    a. Generate K-1 truly random pads R_1, R_2, ..., R_(K-1)
+//    b. Compute the ciphertext C = P ⊕ R_1 ⊕ R_2 ⊕ ... ⊕ R_(K-1)
+//        (where ⊕ represents the XOR operation)
+//    c. Distribute P, R_1, R_2, ..., R_(K-1) across the K collections in that permutation
+//       such that each collection gets a different piece
+// 3. Each collection ends up with multiple pieces from different permutations
+//
+// Security properties:
+// - With K or more collections, all pieces can be XORed together to recover P
+// - With K-1 or fewer collections, the missing pieces make recovery mathematically impossible
+// - An attacker with K-1 collections learns absolutely nothing about P (information-theoretic security)
+// - Each collection's content appears completely random when viewed in isolation
 //
 // Parameters:
 //   - ctx: Context for logging, cancellation, and tracing
@@ -397,9 +458,10 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 //   - chunkFormat: Format for output files (e.g., "bin" or "png")
 //
 // Security considerations:
-//   - The randomSource MUST provide high-quality randomness
+//   - The randomSource MUST provide high-quality, truly random data
 //   - The segment distribution ensures that fewer than K collections reveal nothing about the data
 //   - Each collection receives data that appears completely random when viewed in isolation
+//   - The security depends entirely on the randomness quality - weak randomness breaks the system
 func (p *Pad) encodeOneChunk(ctx context.Context, chunkData []byte, chunkNumber int, randomSource RNG, newChunk NewChunkFunc, chunkFormat string) error {
 	log := trace.FromContext(ctx).WithPrefix("ENCODE")
 
