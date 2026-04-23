@@ -14,7 +14,7 @@ While at first I began with Devin (Sonnet 3.7), I soon moved to ChatGPT o3-mini-
 
 Grand conclusion? For this project, in early 2025, it was far, far too much work to rely upon the AI's to bring this project to completion. With the simplicity of the architecture and code, and (by design) nothing 'hard' such as crypto, it could have been written in an evening by any golang developer even reasonably familiar with the go library's streaming mechanisms.
 
-That said, this left me super-optimistic. As developers, our core toolchain is being forever altered. I can foresee the day when, as developers, our trust in the toolchain will grow to the point where we'll be treating generated source code the same way we now treat disassembled code in the IDE. The future will belong to those who can think "outside-in" from the solution-inward; to those 'systems thinkers' fortunate enough to have a broad and diverse mental palette of architectural patterns at their disposal.
+That said, this left me super-optimistic. As developers, our core toolchain is being forever altered. I can foresee the day when our trust in the toolchain will grow to the point where we'll be treating generated source code the same way we now treat disassembled code in the IDE. The future will belong far more to those who can think "outside-in" from the solution-inward; to those 'systems thinkers' fortunate enough to have a broad and diverse mental palette of general and domain-specific architectural patterns at their disposal.
 
 ## Key Features
 
