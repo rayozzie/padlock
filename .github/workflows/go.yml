@@ -16,9 +16,19 @@ env:
 
 jobs:
   windows-package:
-    name: Run published Windows AMD64 binary
-    runs-on: windows-latest
+    name: Run published Windows binary (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    env:
+      PADLOCK_BINARY: bin/windows-${{ matrix.arch }}/padlock.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,7 +37,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $binary = (Resolve-Path 'bin/windows-amd64/padlock.exe').Path
+          $binary = (Resolve-Path $env:PADLOCK_BINARY).Path
           $expected = (Get-Content "$binary.sha256.txt").Split()[0]
           if ((Get-FileHash $binary -Algorithm SHA256).Hash -ne $expected) {
             throw 'Published executable checksum mismatch'
