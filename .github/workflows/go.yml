@@ -15,6 +15,54 @@ env:
   GOTOOLCHAIN: local
 
 jobs:
+  windows-package:
+    name: Run published Windows AMD64 binary
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check checksum and restore BIN/PNG backups
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = (Resolve-Path 'bin/windows-amd64/padlock.exe').Path
+          $expected = (Get-Content "$binary.sha256.txt").Split()[0]
+          if ((Get-FileHash $binary -Algorithm SHA256).Hash -ne $expected) {
+            throw 'Published executable checksum mismatch'
+          }
+          $root = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
+          $inputDir = Join-Path $root 'input'
+          try {
+            [System.IO.Directory]::CreateDirectory((Join-Path $inputDir 'empty')) | Out-Null
+            $payload = [byte[]]::new(14003)
+            [System.Random]::new(41).NextBytes($payload)
+            $source = Join-Path $inputDir 'source.bin'
+            [System.IO.File]::WriteAllBytes($source, $payload)
+            foreach ($format in @('bin', 'png')) {
+              $backup = Join-Path $root "backup-$format"
+              $restore = Join-Path $root "restore-$format"
+              & $binary encode $inputDir $backup -copies 3 -required 2 -format $format -chunk 1024
+              if ($LASTEXITCODE -ne 0) { throw "Encoding $format failed" }
+              Remove-Item -LiteralPath (Join-Path $backup '2B3.tar')
+              & $binary decode $backup $restore -dryrun
+              if ($LASTEXITCODE -ne 0) { throw "Validating $format failed" }
+              if (Test-Path -LiteralPath $restore) { throw 'Dry run created output' }
+              & $binary decode $backup $restore
+              if ($LASTEXITCODE -ne 0) { throw "Restoring $format failed" }
+              $restored = Join-Path $restore 'source.bin'
+              if ((Get-FileHash $source).Hash -ne (Get-FileHash $restored).Hash) {
+                throw "Restored $format bytes differ"
+              }
+              if (-not (Test-Path (Join-Path $restore 'empty') -PathType Container)) {
+                throw 'Empty directory was lost'
+              }
+            }
+          } finally {
+            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          }
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

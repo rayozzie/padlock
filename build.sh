@@ -14,7 +14,10 @@ else
 fi
 
 mkdir -p bin
-build_dir=$(mktemp -d "$PWD/bin/.padlock-build.XXXXXX")
+# Staging inside the working tree makes later targets look dirty to Go's VCS
+# stamping even when the source checkout is clean. Git's metadata directory is
+# excluded from that check, including when this script runs in a linked worktree.
+build_dir=$(mktemp -d "$(git rev-parse --git-path padlock-build).XXXXXX")
 trap 'rm -rf -- "$build_dir"' EXIT
 
 version=$(git describe --tags --always --dirty)
@@ -28,7 +31,7 @@ build_target() {
     mkdir -p "$build_dir/$platform"
     echo "Building $platform..."
     CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" GOARM=7 \
-        GOAMD64=v1 GOARM64=v8.0 go build -trimpath \
+        GOAMD64=v1 GOARM64=v8.0 go build -trimpath -buildvcs=true \
         -o "$build_dir/$platform/$executable" ./cmd/padlock
     chmod 755 "$build_dir/$platform/$executable"
     (cd "$build_dir/$platform" && "${checksum[@]}" "$executable" > "$executable.sha256.txt")

@@ -4,17 +4,39 @@
 
 ## Download
 
-Pre-built binaries are available for the following platforms:
+Pre-built binaries are available for the following platforms. Go is not required
+to run them. Choose ARM64 for Apple Silicon Macs and AMD64 for Intel Macs or
+64-bit Intel/AMD PCs; choose the Windows ARM64 build for Windows on Arm.
 
 | Platform | Architecture | Download | SHA256 |
 |----------|-------------|----------|--------|
-| macOS | ARM64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-arm64/padlock) | [SHA256](bin/macos-arm64/padlock.sha256.txt) |
-| macOS | AMD64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-amd64/padlock) | [SHA256](bin/macos-amd64/padlock.sha256.txt) |
-| Windows | ARM64 | [padlock.exe](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-arm64/padlock.exe) | [SHA256](bin/windows-arm64/padlock.exe.sha256.txt) |
-| Windows | AMD64 | [padlock.exe](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-amd64/padlock.exe) | [SHA256](bin/windows-amd64/padlock.exe.sha256.txt) |
-| Linux | ARM64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-arm64/padlock) | [SHA256](bin/linux-arm64/padlock.sha256.txt) |
-| Linux | AMD64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-amd64/padlock) | [SHA256](bin/linux-amd64/padlock.sha256.txt) |
-| Linux | ARMv7 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-armv7/padlock) | [SHA256](bin/linux-armv7/padlock.sha256.txt) |
+| macOS | ARM64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-arm64/padlock) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-arm64/padlock.sha256.txt) |
+| macOS | AMD64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-amd64/padlock) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/macos-amd64/padlock.sha256.txt) |
+| Windows | ARM64 | [padlock.exe](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-arm64/padlock.exe) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-arm64/padlock.exe.sha256.txt) |
+| Windows | AMD64 | [padlock.exe](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-amd64/padlock.exe) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/windows-amd64/padlock.exe.sha256.txt) |
+| Linux | ARM64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-arm64/padlock) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-arm64/padlock.sha256.txt) |
+| Linux | AMD64 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-amd64/padlock) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-amd64/padlock.sha256.txt) |
+| Linux | ARMv7 | [padlock](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-armv7/padlock) | [SHA256](https://github.com/rayozzie/padlock/raw/refs/heads/master/bin/linux-armv7/padlock.sha256.txt) |
+
+Download the executable and its SHA256 file into the same directory, keeping their
+original names. Verify the checksum before running:
+
+```bash
+# macOS
+shasum -a 256 -c padlock.sha256.txt
+
+# Linux
+sha256sum -c padlock.sha256.txt
+```
+
+On macOS/Linux, run `chmod +x padlock`, then invoke `./padlock`. On Windows,
+compare the output of `Get-FileHash .\padlock.exe -Algorithm SHA256` with the
+SHA256 file, then invoke `.\padlock.exe` in PowerShell. macOS builds are not
+Developer ID-signed or notarized.
+
+The download links track `master`. Keep the executable and matching checksum
+together when saving a particular build. Checksums detect changed download bytes;
+they are not publisher signatures.
 
 ## Key Features
 
@@ -50,7 +72,7 @@ Pre-built binaries are available for the following platforms:
 
 1. **Encoding Process:**
    - **Archive & Compress:**  
-     The input directory is archived using tar and optionally compressed using gzip.
+     The CLI archives the input directory as TAR and compresses that stream using gzip. Library callers can choose uncompressed serialization.
    - **Chunking:**  
      The compressed stream is divided so each collection's encoded payload fits the configured chunk limit, before headers and container overhead.
    - **Threshold Splitting:**
@@ -181,32 +203,58 @@ The generator is reused across chunks. New reads consume new output, but chunk b
 
 ## Installation and Usage
 
-### Requirements
+### Building from Source
 
-- Go 1.27.2 or later; use a supported release with current security patches (needed when building from source)
-- A standard Go build environment
-
-### Building Padlock
-
-To build the utility, run the following command in your terminal. (Simply copy and paste the command as-is.)
+Install Git and Go 1.27.2 or later; use a supported Go release with current security
+patches. Then clone the repository and build from its root:
 
 ```bash
+git clone https://github.com/rayozzie/padlock.git
+cd padlock
 go build -o padlock ./cmd/padlock
 ```
 
-`./build.sh` builds all seven supported targets and their SHA256 files. It stages every build before replacing packaged outputs. `bin/padlock` is the macOS ARM64 convenience copy.
+On Windows, use `go build -o padlock.exe ./cmd/padlock`. The examples below use
+`padlock` for an executable on your PATH; use `./padlock` or `.\padlock.exe` when
+running it from the current directory.
+
+`./build.sh` uses Bash to build all seven supported targets and their SHA256 files,
+with cgo disabled and local source paths removed. It stages every build before
+replacing packaged outputs. Run it from a clean commit when preparing published
+binaries: `go version -m <binary>` records that source revision, which precedes
+the commit publishing the resulting artifacts. `bin/padlock` is the macOS ARM64
+convenience copy, not a portable executable for every platform.
+
+### Quick Start
+
+With an existing `input` directory, create three collections requiring any two:
+
+```bash
+padlock encode ./input ./collections -copies 3 -required 2 -format bin
+padlock decode ./collections ./restored -dryrun
+padlock decode ./collections ./restored
+```
+
+This creates `2A3.tar`, `2B3.tar`, and `2C3.tar`. For a recovery check using only
+two collections, place any two of those files in a separate directory and use it
+as the decode input. Keep collections on storage locations appropriate to your
+recovery and access requirements. Current collection containers are TAR; ZIP
+containers are not decoded directly.
 
 ### Command-Line Usage
 
 - **Encode:**
 
+  ```text
   padlock encode <inputDir> <outputDir> -copies 5 -required 3 -format png -chunk 2097152 [-clear] [-verbose] [-files] [-dryrun]
+  padlock encode <inputDir> <outputDir1> <outputDir2> ... <outputDirN> [-required K] [options]
+  ```
 
   - `<inputDir>`: Directory containing the data to be archived and encoded.
   - `<outputDir>`: Destination directory for the generated collection TAR files or subdirectories.
   - `-copies`: Number of collections to create (must be between 2 and 26). With multiple output directories, defaults to their count; an explicitly supplied value must match. Conflicts are rejected before outputs are created or cleared, including in dry runs.
   - `-required`: Minimum number of collections required for reconstruction, from 2 through `-copies`. Defaults to 2 with one output directory, or all collections with multiple output directories. An explicitly supplied valid value overrides this default. Invalid values fail before outputs are created or cleared, including in dry runs.
-  - `-format`: Output format, either "bin" or "png".
+  - `-format`: Output format, either "bin" or "png" (default: "png").
   - `-chunk`: Maximum encoded payload bytes per collection chunk, before headers and container overhead. The minimum is C(N-1, K-1): for example, 2 bytes for 2-of-3 or 6 bytes for 3-of-5. Invalid sizes are rejected before output directories are created or cleared, including with `-clear` or `-dryrun`.
   - `-clear`: (Optional) Clears the output directory before encoding.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
@@ -217,13 +265,22 @@ go build -o padlock ./cmd/padlock
 
 - **Decode:**
 
+  ```text
   padlock decode <inputDir> <outputDir> [-clear] [-verbose] [-dryrun]
+  padlock decode <inputDir1> <inputDir2> ... <inputDirN> <outputDir> [options]
+  padlock decode <inputDir> -dryrun
+  ```
 
   - `<inputDir>`: Root directory containing the collection subdirectories or TAR files.
   - `<outputDir>`: Destination directory where the original data will be restored.
   - `-clear`: (Optional) Clears the output directory before decoding.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
   - `-dryrun`: (Optional) Reconstruct and validate the complete stream without writing restored files. Checks cannot certify authenticity or predict every destination-specific error.
+
+Put directory arguments before flags. With multiple decode inputs, the last
+directory argument is always the output, even in a dry run. Omit the output only
+for a single-input dry run. Multiple inputs may be collection directories or
+directories containing collection subdirectories/TAR files.
 
 **Important:**  
 For encoding and decoding, input and output directories must be separate: neither may be the same as, or contain, the other. Padlock checks all input/output pairs, including relative paths and symlink aliases, before clearing or creating any output directory. Dry runs do not prepare output directories. Also, ensure that the number of available collections meets or exceeds the required threshold; otherwise, an error will be displayed.
@@ -250,4 +307,4 @@ For encoding and decoding, input and output directories must be separate: neithe
 
 ## License
 
-MIT License
+[MIT License](LICENSE)
