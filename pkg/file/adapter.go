@@ -1,22 +1,33 @@
+// Copyright 2025 Ray Ozzie. All rights reserved.
+
 package file
 
 import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
-// ChunkWriter is a simple io.WriteCloser that accumulates data and writes it on close,
-// with built-in randomness validation
+// ChunkWriter accumulates one encoded chunk and writes it on close.
 type ChunkWriter struct {
 	ctx       context.Context
 	formatter Formatter
 	collPath  string
 	collIndex int
 	chunkNum  int
+	chunkData []byte
+}
+
+// NamedChunkWriter is like ChunkWriter but allows specifying a collection name
+// that is different from the directory basename
+type NamedChunkWriter struct {
+	Ctx       context.Context
+	Formatter Formatter
+	CollPath  string
+	CollName  string // Use this name for the files instead of basename
+	ChunkNum  int
 	chunkData []byte
 }
 
@@ -38,100 +49,31 @@ func (cw *ChunkWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// validateRandomness performs basic statistical tests on data to ensure it appears random
-// This helps protect users from accidentally writing non-random or low-entropy data
-func (cw *ChunkWriter) validateRandomness() error {
-	log := trace.FromContext(cw.ctx).WithPrefix("RANDOMNESS-CHECK")
-	
-	// Skip validation for very small chunks (less than 32 bytes)
-	if len(cw.chunkData) < 32 {
-		log.Debugf("Skipping randomness check for small chunk (%d bytes)", len(cw.chunkData))
-		return nil
-	}
-	
-	// Calculate byte frequency distribution
-	counts := make([]int, 256)
-	for _, b := range cw.chunkData {
-		counts[b]++
-	}
-	
-	// Check for byte distribution anomalies
-	// We expect a relatively uniform distribution in random data
-	zeroCount := 0
-	highByteCount := 0
-	zeros := counts[0]
-	
-	// Count extreme values
-	for _, count := range counts {
-		if count == 0 {
-			zeroCount++
-		}
-		if count > len(cw.chunkData)/10 { // More than 10% of data is a single byte value
-			highByteCount++
-		}
-	}
-	
-	// Detection parameters - tweaked for reasonable sensitivity without false positives
-	// 1. Too many byte values never appear (suggests limited range of values)
-	if zeroCount > 128 {
-		log.Debugf("Warning: %d out of 256 possible byte values never appear in the data", zeroCount)
-		
-		// Don't fail the write, but warn the user through logging
-		if zeroCount > 200 {
-			log.Infof("⚠️ Low entropy detected: Data has limited byte diversity. Only %d/256 possible byte values used.", 256-zeroCount)
-		}
-	}
-	
-	// 2. Too many of a single byte value (suggests patterns or non-randomness)
-	if highByteCount > 5 {
-		log.Debugf("Warning: %d byte values appear with unusually high frequency", highByteCount)
-		log.Infof("⚠️ Possible non-random pattern detected in data. Some byte values appear with unusually high frequency.")
-	}
-	
-	// 3. Too many zeros or ones (common in non-random data like all-zero blocks)
-	if zeros > len(cw.chunkData)/4 {
-		log.Infof("⚠️ Low randomness warning: %d%% of data consists of zero bytes.", 100*zeros/len(cw.chunkData))
-	}
-	
-	// Calculate byte-level Shannon entropy (scaled 0-8 bits)
-	// This is a good overall measurement of randomness/unpredictability
-	entropy := 0.0
-	dataLen := float64(len(cw.chunkData))
-	for _, count := range counts {
-		if count > 0 {
-			p := float64(count) / dataLen
-			entropy -= p * math.Log2(p)
-		}
-	}
-	
-	// Truly random data should have entropy close to 8 bits per byte
-	if entropy < 6.5 {
-		log.Infof("⚠️ Low entropy warning: Data entropy is %.2f bits per byte (high-quality random data should be close to 8.0)", entropy) 
-		// While this is concerning, don't block the operation - just warn the user
-	} else {
-		log.Debugf("Data passed randomness check: entropy = %.2f bits per byte", entropy)
-	}
-	
-	// Return nil to allow the operation to proceed regardless of warnings
-	// This allows valid writes with warnings, but we've alerted the user to potential issues
-	return nil
-}
-
 // Close implements io.Closer interface
 func (cw *ChunkWriter) Close() error {
-	// Validate randomness before writing
-	if err := cw.validateRandomness(); err != nil {
-		log := trace.FromContext(cw.ctx).WithPrefix("CHUNK-WRITER")
-		log.Error(fmt.Errorf("randomness validation failed: %w", err))
-		// Note: we continue even after validation errors to maintain compatibility
-	}
-	
+
 	return cw.formatter.WriteChunk(cw.ctx, cw.collPath, cw.collIndex, cw.chunkNum, cw.chunkData)
 }
 
-// ChunkReaderAdapter adapts CollectionReader to io.Reader
+// Write implements io.Writer interface for NamedChunkWriter
+func (cw *NamedChunkWriter) Write(p []byte) (n int, err error) {
+	if cw.chunkData == nil {
+		cw.chunkData = make([]byte, 0)
+	}
+	cw.chunkData = append(cw.chunkData, p...)
+	return len(p), nil
+}
+
+// Close implements io.Closer interface for NamedChunkWriter
+func (cw *NamedChunkWriter) Close() error {
+
+	// Call the custom write function that uses Collection name instead of path basename
+	return WriteNamedChunk(cw.Ctx, cw.Formatter, cw.CollPath, cw.CollName, cw.ChunkNum, cw.chunkData)
+}
+
+// ChunkReaderAdapter adapts a CollectionReader to io.Reader
 type ChunkReaderAdapter struct {
-	Reader       *CollectionReader
+	Reader       *CollectionReader // Standard directory/tar-based reader
 	buffer       []byte
 	offset       int
 	ctx          context.Context
@@ -146,6 +88,14 @@ func (a *ChunkReaderAdapter) Path() string {
 // Name returns the name of the underlying collection
 func (a *ChunkReaderAdapter) Name() string {
 	return a.Reader.Collection.Name
+}
+
+// BufferedChunk returns the unread bytes of the current encoded chunk without
+// advancing the stream. The caller must not modify them; they remain valid only
+// until the next Read or SetCurrentChunk call. Preflight can compare duplicate
+// first-chunk payloads after reading their headers without another allocation.
+func (a *ChunkReaderAdapter) BufferedChunk() []byte {
+	return a.buffer[a.offset:]
 }
 
 // NewChunkReaderAdapter creates a new ChunkReaderAdapter from a CollectionReader
@@ -174,17 +124,18 @@ func (a *ChunkReaderAdapter) Read(p []byte) (int, error) {
 
 	// If buffer is empty or fully read, get next chunk
 	if a.buffer == nil || a.offset >= len(a.buffer) {
-		log.Debugf("Getting next chunk from collection %s (chunk %d)",
-			a.Reader.Collection.Name, a.currentChunk)
+		collName := a.Reader.Collection.Name
+
+		log.Debugf("Getting next chunk from collection %s (chunk %d)", collName, a.currentChunk)
 
 		// Make sure we reset the reader's chunk index to the one we want
 		// This ensures we only read one chunk at a time
 		a.Reader.ChunkIndex = a.currentChunk
-
 		chunk, err := a.Reader.ReadNextChunk(a.ctx)
+
 		if err != nil {
 			if err == io.EOF {
-				log.Debugf("Reached end of chunks (EOF) for collection %s", a.Reader.Collection.Name)
+				log.Debugf("Reached end of chunks (EOF) for collection %s", collName)
 
 				// Increment currentChunk even on EOF so we're ready for the next call
 				a.currentChunk++
@@ -192,7 +143,7 @@ func (a *ChunkReaderAdapter) Read(p []byte) (int, error) {
 				return 0, io.EOF
 			} else {
 				log.Error(fmt.Errorf("error getting chunk %d from collection %s: %w",
-					a.currentChunk, a.Reader.Collection.Name, err))
+					a.currentChunk, collName, err))
 				return 0, err
 			}
 		}
@@ -200,8 +151,11 @@ func (a *ChunkReaderAdapter) Read(p []byte) (int, error) {
 		// We've successfully read the chunk, increment the chunk number for next time
 		a.currentChunk++
 
+		// Get the current chunk index for logging (subtract 1 because it was already incremented)
+		chunkIndex := a.Reader.ChunkIndex - 1
+
 		log.Debugf("Got chunk %d (%d bytes) from collection %s",
-			a.Reader.ChunkIndex, len(chunk), a.Reader.Collection.Name)
+			chunkIndex, len(chunk), collName)
 
 		a.buffer = chunk
 		a.offset = 0

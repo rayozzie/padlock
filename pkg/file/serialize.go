@@ -1,23 +1,35 @@
+// Copyright 2025 Ray Ozzie. All rights reserved.
+
 package file
 
 import (
 	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
-// SerializeDirectoryToStream takes an input directory path and generates an io.Reader
-// which is a 'tar' stream of the entire directory.
+// SerializeDirectoryToStream resolves the input directory path and streams its
+// contents as TAR. Symlinks within that directory are skipped.
 func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCloser, error) {
-	log := trace.FromContext(ctx).WithPrefix("SERIALIZE")
+	log := trace.FromContext(ctx).WithPrefix("serialize")
 	log.Debugf("Serializing directory to tar stream: %s", inputDir)
+	if err := ValidateInputDirectory(ctx, inputDir); err != nil {
+		return nil, err
+	}
+	// Walk does not follow a symlink at its root. Resolve the supplied path for
+	// every caller, including dry runs, without cleaning away link/.. first.
+	root, err := filepath.EvalSymlinks(inputDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve input directory %q: %w", inputDir, err)
+	}
+	inputDir = root
 	pr, pw := io.Pipe()
 
 	go func() {
@@ -25,13 +37,15 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 
 		log.Debugf("Creating tar writer")
 		tw := tar.NewWriter(pw)
-		defer tw.Close()
 
 		fileCount := 0
 		totalBytes := int64(0)
 
 		// Walk through the directory
 		err := filepath.Walk(inputDir, func(path string, info os.FileInfo, walkErr error) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if walkErr != nil {
 				log.Error(fmt.Errorf("error walking path %s: %w", path, walkErr))
 				return walkErr
@@ -45,6 +59,18 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 			// Skip symlinks
 			if info.Mode()&os.ModeSymlink != 0 {
 				return nil
+			}
+
+			// Validate the actual open file before emitting its header or reading
+			// any bytes. A special file must never enter a successful backup.
+			var f *os.File
+			if !info.IsDir() {
+				var err error
+				f, info, err = openRegularSource(path, info)
+				if err != nil {
+					return err
+				}
+				defer f.Close()
 			}
 
 			// Get the relative path for the tar entry
@@ -73,14 +99,6 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 				return nil
 			}
 
-			// Open the file to copy its contents
-			f, err := os.Open(path)
-			if err != nil {
-				log.Error(fmt.Errorf("open file for tar %s: %w", path, err))
-				return err
-			}
-			defer f.Close()
-
 			// Copy the file data to the tar stream
 			n, err := io.Copy(tw, f)
 			if err != nil {
@@ -90,7 +108,7 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 
 			fileCount++
 			totalBytes += n
-			log.Debugf("Added to tar: %s (%d bytes)", rel, n)
+			log.Infof("%s (%d bytes)", rel, n)
 
 			return nil
 		})
@@ -98,6 +116,15 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 		if err != nil {
 			log.Error(fmt.Errorf("error during directory serialization: %w", err))
 			pw.CloseWithError(fmt.Errorf("error during directory serialization: %w", err))
+			return
+		}
+
+		// Finalization can fail if a source file became shorter after its TAR
+		// header was written. Report that error before closing the pipe as EOF.
+		if err := tw.Close(); err != nil {
+			streamErr := fmt.Errorf("error finalizing directory archive: %w", err)
+			log.Error(streamErr)
+			pw.CloseWithError(streamErr)
 			return
 		}
 
@@ -110,8 +137,11 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 // DeserializeDirectoryFromStream takes a tar stream and extracts its contents
 // to the specified output directory. It returns errors encountered during extraction.
 func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.Reader, clearIfNotEmpty bool) error {
-	log := trace.FromContext(ctx).WithPrefix("DESERIALIZE")
+	log := trace.FromContext(ctx).WithPrefix("deserialize")
 	log.Debugf("Deserializing to directory: %s", outputDir)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Ensure the output directory can be written to
 	if err := prepareOutputDirectory(ctx, outputDir, clearIfNotEmpty); err != nil {
@@ -120,222 +150,182 @@ func DeserializeDirectoryFromStream(ctx context.Context, outputDir string, r io.
 	}
 
 	// Create the output directory if it doesn't exist
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
 		log.Error(fmt.Errorf("failed to create output directory: %w", err))
 		return err
 	}
-
-	log.Debugf("Directory prepared, now reading input stream")
-
-	// Read a small buffer to check if it looks like a tar file
-	// TAR files start with a 512-byte header
-	peekBuf := make([]byte, 512)
-	n, err := r.Read(peekBuf)
-	if err != nil && err != io.EOF {
-		log.Error(fmt.Errorf("error reading from input stream: %w", err))
-		return fmt.Errorf("error reading from input stream: %w", err)
+	outputRoot, err := os.OpenRoot(outputDir)
+	if err != nil {
+		return fmt.Errorf("failed to open extraction directory: %w", err)
 	}
+	defer outputRoot.Close()
 
-	if n < 512 {
-		log.Infof("Input data is small (%d bytes), treating as raw data", n)
+	extractor := newTarExtractor(outputRoot)
+	extractErr := processDirectoryTar(ctx, r, extractor.extract, log)
+	return errors.Join(extractErr, extractor.finish(), ctx.Err())
+}
 
-		// First, try to see if it looks like a gzip-compressed tar file (even if small)
-		if n >= 2 && peekBuf[0] == 0x1f && peekBuf[1] == 0x8b {
-			log.Infof("Detected gzip header, attempting to decompress")
+// ValidateDirectoryStream checks a directory archive without writing files.
+// Like restore, it accepts TAR or gzip-compressed TAR and requires a complete
+// archive, including both TAR ending blocks and the end of the input stream.
+func ValidateDirectoryStream(ctx context.Context, r io.Reader) error {
+	log := trace.FromContext(ctx).WithPrefix("validate-archive")
+	return processDirectoryTar(ctx, r, func(_ *tar.Header, contents io.Reader) (int64, error) {
+		return io.Copy(io.Discard, contents)
+	}, log)
+}
 
-			// Try to decompress it
-			gzr, err := gzip.NewReader(bytes.NewReader(peekBuf[:n]))
-			if err != nil {
-				log.Error(fmt.Errorf("detected gzip header but failed to create reader: %w", err))
-			} else {
-				// Successfully created a gzip reader, read the decompressed data
-				decompressed, err := io.ReadAll(gzr)
-				gzr.Close()
-				if err != nil {
-					log.Error(fmt.Errorf("failed to decompress gzip data: %w", err))
-				} else {
-					log.Infof("Successfully decompressed %d bytes to %d bytes", n, len(decompressed))
+// tarSourceReader prevents archive/tar from treating a physical EOF as a
+// complete archive. Only tar.Reader's own two-zero-block terminator may end
+// iteration successfully. Retain source errors even if a full header read
+// consumes the accompanying bytes and io.ReadFull suppresses the error.
+type tarSourceReader struct {
+	reader io.Reader
+	err    error
+}
 
-					// Check if it's a tar file
-					if len(decompressed) >= 512 {
-						log.Infof("Decompressed data is large enough to be a tar file, using tar reader")
-						tarReader := tar.NewReader(bytes.NewReader(decompressed))
+func (r *tarSourceReader) Read(p []byte) (int, error) {
+	var n int
+	if r.err == nil {
+		n, r.err = r.reader.Read(p)
+	}
+	if r.err == io.EOF {
+		return n, fmt.Errorf("incomplete tar archive: missing end-of-archive blocks: %w", io.ErrUnexpectedEOF)
+	}
+	return n, r.err
+}
 
-						fileCount := 0
-						for {
-							header, err := tarReader.Next()
-							if err == io.EOF {
-								break
-							}
-							if err != nil {
-								log.Error(fmt.Errorf("tar reading error: %w", err))
-								break
-							}
-
-							// Get the output path
-							outPath := filepath.Join(outputDir, header.Name)
-
-							// Create parent directory
-							if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-								log.Error(fmt.Errorf("failed to create directory for %s: %w", outPath, err))
-								continue
-							}
-
-							// Create the file
-							f, err := os.Create(outPath)
-							if err != nil {
-								log.Error(fmt.Errorf("failed to create file %s: %w", outPath, err))
-								continue
-							}
-
-							// Copy the contents
-							written, err := io.Copy(f, tarReader)
-							f.Close()
-							if err != nil {
-								log.Error(fmt.Errorf("failed to write to %s: %w", outPath, err))
-							} else {
-								log.Infof("Extracted %s (%d bytes)", header.Name, written)
-								fileCount++
-							}
-						}
-
-						if fileCount > 0 {
-							log.Infof("Successfully extracted %d files from tar archive", fileCount)
-							return nil
-						}
-					}
-
-					// Not a valid tar or no files extracted, just save the decompressed data
-					outfile := filepath.Join(outputDir, "decoded_output.dat")
-					if err := os.WriteFile(outfile, decompressed, 0644); err != nil {
-						log.Error(fmt.Errorf("failed to write decompressed data: %w", err))
-					} else {
-						log.Infof("Wrote decompressed data to %s (%d bytes)", outfile, len(decompressed))
-						fmt.Printf("\nDecoding completed successfully. Output saved to %s (%d bytes)\n",
-							outfile, len(decompressed))
-						return nil
-					}
-				}
-			}
-		}
-
-		// Save the data directly to a file in the output directory - always use a consistent name
-		outfile := filepath.Join(outputDir, "decoded_data.txt")
-
-		// Attempt to detect if this is text or binary
-		isText := true
-		for _, b := range peekBuf[:n] {
-			if b < 32 && b != '\n' && b != '\r' && b != '\t' {
-				isText = false
-				break
-			}
-		}
-
-		if isText {
-			log.Infof("Detected text data, saving as text file")
-			// If it looks like text, save it as-is
-			if err := os.WriteFile(outfile, peekBuf[:n], 0644); err != nil {
-				log.Error(fmt.Errorf("failed to write decoded text: %w", err))
-				return fmt.Errorf("failed to write decoded text: %w", err)
-			}
-		} else {
-			// For binary data, save it as a binary file
-			outfile = filepath.Join(outputDir, "decoded_data.bin")
-			log.Infof("Detected binary data, saving as binary file")
-			if err := os.WriteFile(outfile, peekBuf[:n], 0644); err != nil {
-				log.Error(fmt.Errorf("failed to write decoded binary: %w", err))
-				return fmt.Errorf("failed to write decoded binary: %w", err)
-			}
-		}
-
-		log.Infof("Successfully wrote %d bytes to %s", n, outfile)
-		fmt.Printf("\nDecoding completed successfully. Output saved to %s (%d bytes)\n", outfile, n)
+func (r *tarSourceReader) finish() error {
+	if r.err == io.EOF {
 		return nil
 	}
+	if r.err != nil {
+		return r.err
+	}
+	// Consume trailing TAR padding and check the actual stream ending. For
+	// gzip this also reads and validates its footer; Close alone does not.
+	_, err := io.Copy(io.Discard, r.reader)
+	return err
+}
 
-	// Create a new reader that first returns our peeked data, then the rest
-	combinedReader := io.MultiReader(bytes.NewReader(peekBuf[:n]), r)
-	tr := tar.NewReader(combinedReader)
+// directoryContextReader checks cancellation even when a decompressor has
+// buffered enough data to keep extracting after its input pipe is closed.
+// It cannot interrupt an underlying Read or filesystem operation in progress.
+type directoryContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
 
+func (r directoryContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+// processDirectoryTar shares archive parsing and completion checks between
+// restoration and dry runs. The handler consumes each entry's contents.
+func processDirectoryTar(ctx context.Context, r io.Reader, processEntry func(*tar.Header, io.Reader) (int64, error), log *trace.Tracer) error {
+	stream, err := DecompressStreamToStream(ctx, directoryContextReader{ctx, r})
+	if err != nil {
+		return fmt.Errorf("read directory archive: %w", err)
+	}
+	if closer, ok := stream.(io.Closer); ok {
+		defer closer.Close()
+	}
+	source := &tarSourceReader{reader: directoryContextReader{ctx, stream}}
+	tr := tar.NewReader(source)
 	fileCount := 0
 	totalBytes := int64(0)
+	progressInterval := 100 // Log progress every N files
+	progressCounter := 0
+	lastProgressTime := time.Now()
+	progressUpdateInterval := 5 * time.Second // Minimum time between progress updates
 
 	// Iterate through tar entries
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		header, err := tr.Next()
 		if err == io.EOF {
-			if fileCount == 0 {
-				log.Error(fmt.Errorf("no files found in tar archive"))
-				return fmt.Errorf("no files found in tar archive")
-			}
-			break // End of tar archive
+			// A complete archive may contain only directories or no entries.
+			// tarSourceReader requires both ending blocks; finish below also
+			// validates the underlying stream ending, including any gzip footer.
+			break
 		}
 		if err != nil {
 			log.Error(fmt.Errorf("tar header read error: %w", err))
-			// Create a sample file with the data we've seen
-			samplePath := filepath.Join(outputDir, "invalid_tar_sample.dat")
-			if err := os.WriteFile(samplePath, peekBuf[:n], 0644); err != nil {
-				log.Debugf("Failed to write invalid tar sample: %v", err)
-			} else {
-				log.Debugf("Wrote invalid tar sample to %s", samplePath)
-			}
 			return fmt.Errorf("tar header read error: %w", err)
 		}
+		// Cancellation may have arrived while the header read was in progress.
+		// Do not create another entry using the bytes that read returned.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-		// Get the full path for extraction
-		outPath := filepath.Join(outputDir, header.Name)
+		// Apply the same path/type rules to restore and dry-run validation,
+		// before either extraction or draining can consume unsupported entries.
+		if _, err := validateTarEntryHeader(header); err != nil {
+			return err
+		}
 
-		// Handle directory entries
+		n, err := processEntry(header, tr)
+		if err != nil {
+			log.Error(err)
+			return err
+		}
 		if header.Typeflag == tar.TypeDir {
-			log.Debugf("Creating directory: %s", outPath)
-			if err := os.MkdirAll(outPath, os.FileMode(header.Mode)); err != nil {
-				log.Error(fmt.Errorf("failed to create directory %s: %w", outPath, err))
-				return err
-			}
 			continue
-		}
-
-		// Create parent directory for files
-		parentDir := filepath.Dir(outPath)
-		if err := os.MkdirAll(parentDir, 0755); err != nil {
-			log.Error(fmt.Errorf("failed to create parent directory for %s: %w", outPath, err))
-			return err
-		}
-
-		// Create the file for writing
-		log.Debugf("Creating file: %s", outPath)
-		file, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-		if err != nil {
-			log.Error(fmt.Errorf("failed to create file %s: %w", outPath, err))
-			return err
-		}
-
-		// Copy file contents
-		n, err := io.Copy(file, tr)
-		file.Close()
-		if err != nil {
-			log.Error(fmt.Errorf("failed to write file %s: %w", outPath, err))
-			return err
 		}
 
 		fileCount++
 		totalBytes += n
-		log.Debugf("Extracted: %s (%d bytes)", header.Name, n)
+
+		// Progress logging - don't spam the logs too much for large archives
+		progressCounter++
+		if progressCounter >= progressInterval || time.Since(lastProgressTime) > progressUpdateInterval {
+			log.Infof("Archive progress: %d files (%s)", fileCount, formatByteSize(totalBytes))
+			progressCounter = 0
+			lastProgressTime = time.Now()
+		} else {
+			log.Infof("Processed: %s (%d bytes)", header.Name, n)
+		}
 	}
 
-	log.Debugf("Directory deserialization complete: %d files, %d bytes", fileCount, totalBytes)
+	if err := source.finish(); err != nil {
+		return fmt.Errorf("read tar archive ending: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	log.Infof("Directory archive complete: %d files (%s)", fileCount, formatByteSize(totalBytes))
 	return nil
+}
+
+// formatByteSize formats size in bytes to a human-readable string with units
+func formatByteSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // prepareOutputDirectory ensures the output directory is empty for deserialization
 func prepareOutputDirectory(ctx context.Context, dirPath string, clearIfNotEmpty bool) error {
-	log := trace.FromContext(ctx).WithPrefix("DESERIALIZE")
+	log := trace.FromContext(ctx).WithPrefix("deserialize")
 	log.Debugf("Preparing output directory: %s (clear=%v)", dirPath, clearIfNotEmpty)
 
 	// Create the directory if it doesn't exist
 	if _, err := os.Stat(dirPath); os.IsNotExist(err) {
 		log.Debugf("Creating directory: %s", dirPath)
-		if err := os.MkdirAll(dirPath, 0755); err != nil {
+		if err := os.MkdirAll(dirPath, 0700); err != nil {
 			log.Error(fmt.Errorf("failed to create directory: %w", err))
 			return err
 		}

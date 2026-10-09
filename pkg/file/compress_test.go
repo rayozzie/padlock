@@ -1,14 +1,68 @@
+// Copyright 2025 Ray Ozzie. All rights reserved.
+
 package file
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/rayozzie/padlock/pkg/trace"
 )
+
+type compressionErrorReader struct {
+	data          []byte
+	err           error
+	errorWithData bool
+}
+
+func (r *compressionErrorReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 && r.errorWithData {
+		return n, r.err
+	}
+	return n, nil
+}
+
+func TestCompressionPreservesSourceErrors(t *testing.T) {
+	failure := errors.New("injected source read failure")
+	for _, tc := range []struct {
+		name          string
+		size          int
+		err           error
+		errorWithData bool
+	}{
+		{name: "before_data", err: failure},
+		{name: "after_data", size: 100, err: failure},
+		{name: "with_data", size: 100, err: failure, errorWithData: true},
+		{name: "after_multiple_reads", size: 128 * 1024, err: failure},
+		{name: "unexpected_eof", size: 100, err: io.ErrUnexpectedEOF},
+		{name: "cancelled_source", size: 100, err: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := &compressionErrorReader{
+				data: bytes.Repeat([]byte("x"), tc.size), err: tc.err, errorWithData: tc.errorWithData,
+			}
+			compressed := CompressStreamToStream(context.Background(), source)
+			_, err := io.ReadAll(compressed)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("compressed stream returned %v, want source error %v", err, tc.err)
+			}
+			// A source's unexpected EOF must not be confused with ReadFull's
+			// normal short final chunk by the encoder.
+			if err == io.ErrUnexpectedEOF {
+				t.Fatal("source error lost its compression context")
+			}
+		})
+	}
+}
 
 func TestCompressStreamToStream(t *testing.T) {
 	ctx := context.Background()
