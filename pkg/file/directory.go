@@ -1,3 +1,5 @@
+// Copyright 2025 Ray Ozzie. All rights reserved.
+
 package file
 
 import (
@@ -112,7 +114,7 @@ func PrepareOutputDirectory(ctx context.Context, outputDir string, clear bool) e
 		// Create the directory
 		log.Debugf("Creating output directory: %s", outputDir)
 
-		if err := os.MkdirAll(outputDir, 0755); err != nil {
+		if err := os.MkdirAll(outputDir, 0700); err != nil {
 			log.Error(fmt.Errorf("failed to create output directory: %w", err))
 			return fmt.Errorf("failed to create output directory: %w", err)
 		}
@@ -130,11 +132,19 @@ func CreateCollectionDirectory(ctx context.Context, baseDir string, collectionNa
 	collPath := filepath.Join(baseDir, collectionName)
 	log.Debugf("Creating collection directory: %s", collPath)
 
-	if err := os.MkdirAll(collPath, 0755); err != nil {
+	if err := os.MkdirAll(collPath, 0700); err != nil {
 		log.Error(fmt.Errorf("failed to create collection directory %s: %w", collPath, err))
 		return "", fmt.Errorf("failed to create collection directory %s: %w", collPath, err)
 	}
 
 	log.Debugf("Collection directory created: %s", collPath)
 	return collPath, nil
+}
+
+// createCollectionFile creates a share or archive with owner-only access from
+// the first write. Exclusive creation avoids reusing an existing file's broader
+// permissions or following a pre-existing link. CLI output directories must be
+// empty before encoding, and streaming TAR writers reuse their open file.
+func createCollectionFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 }

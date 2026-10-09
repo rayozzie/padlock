@@ -1,3 +1,5 @@
+// Copyright 2025 Ray Ozzie. All rights reserved.
+
 package pad
 
 import (
@@ -109,10 +111,26 @@ func TestStreamBasedRNG(t *testing.T) {
 	}
 }
 
-// runRandomnessTests applies a suite of statistical tests to evaluate the randomness
-// of the provided byte slice. These tests are based on well-established cryptographic
-// testing methodologies, but simplified for unit testing purposes.
+// statisticalTestAlpha is the per-criterion false-alarm target under the IID
+// uniform model. Each sample has nine criteria (frequency, runs, six lags, and
+// chi-square); seven live samples currently run. The chi-square calibration is
+// asymptotic, so this is not a rigorous finite-sample bound for the whole suite.
+// Use a conservative target for automated regression tests, not 3/4-sigma
+// cutoffs that routinely reject healthy output when applied many times.
+const statisticalTestAlpha = 1e-9
+
+// fairBitCountDeviation inverts the two-sided Hoeffding bound
+// P(|S - n/2| >= d) <= 2*exp(-2*d*d/n) for independent fair bits.
+// https://doi.org/10.1080/01621459.1963.10500830 (Theorem 2).
+func fairBitCountDeviation(trials int) float64 {
+	return math.Sqrt(float64(trials) * math.Log(2/statisticalTestAlpha) / 2)
+}
+
+// runRandomnessTests checks samples for some gross defects. Passing does not
+// prove independence, unpredictability, or security. Keep failures visible;
+// never retry a sample until it passes.
 func runRandomnessTests(t *testing.T, rngName string, data []byte) {
+	t.Helper()
 	// Run frequency test (distribution of 0s and 1s at bit level)
 	if err := frequencyTest(data); err != nil {
 		t.Errorf("%s failed frequency test: %v", rngName, err)
@@ -123,17 +141,11 @@ func runRandomnessTests(t *testing.T, rngName string, data []byte) {
 		t.Errorf("%s failed runs test: %v", rngName, err)
 	}
 
-	// Run byte distribution test (distribution of byte values)
-	if err := byteDistributionTest(data); err != nil {
-		t.Errorf("%s failed byte distribution test: %v", rngName, err)
-	}
-
-	// Run entropy test (Shannon entropy)
+	// Report histogram entropy as a diagnostic. Byte uniformity is checked
+	// once, by the aggregate chi-square statistic below, not by another 256
+	// separate per-byte thresholds or an uncalibrated entropy cutoff.
 	entropy := calculateEntropy(data)
 	t.Logf("%s entropy: %.6f bits per byte (ideal: 8.0)", rngName, entropy)
-	if entropy < 7.9 {
-		t.Errorf("%s has suspiciously low entropy: %.6f bits per byte", rngName, entropy)
-	}
 
 	// Run autocorrelation test
 	if err := autocorrelationTest(data); err != nil {
@@ -153,6 +165,9 @@ func runRandomnessTests(t *testing.T, rngName string, data []byte) {
 // frequencyTest checks if the proportion of 1s and 0s in the bit sequence
 // is approximately 50% each, as expected from a random sequence.
 func frequencyTest(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("frequency test requires a nonempty sample")
+	}
 	bitCount := 0
 	for _, b := range data {
 		// Count bits in byte using Hamming weight (population count)
@@ -166,12 +181,8 @@ func frequencyTest(data []byte) error {
 	totalBits := len(data) * 8
 	proportion := float64(bitCount) / float64(totalBits)
 
-	// For a truly random sequence, proportion should be close to 0.5
-	// We use a 4-sigma confidence interval to account for the natural variation
-	// in random number generators, especially in the PCG64 implementation which
-	// may sometimes show slight statistical deviations in smaller sample sizes
 	deviation := math.Abs(proportion - 0.5)
-	maxDeviation := 4.0 * math.Sqrt(0.25/float64(totalBits))
+	maxDeviation := fairBitCountDeviation(totalBits) / float64(totalBits)
 
 	if deviation > maxDeviation {
 		return &randomnessError{
@@ -185,9 +196,11 @@ func frequencyTest(data []byte) error {
 	return nil
 }
 
-// runsTest checks for the number of runs (consecutive sequences of identical bits)
-// to verify independence of bits in the sequence.
+// runsTest checks for unusually many or few runs of identical bits.
 func runsTest(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("runs test requires a nonempty sample")
+	}
 	// Extract bits into a slice for easier processing
 	bits := make([]bool, len(data)*8)
 	for i, b := range data {
@@ -204,15 +217,12 @@ func runsTest(data []byte) error {
 		}
 	}
 
-	// For a random sequence, the expected number of runs is approximately:
-	// (number of bits / 2) + 1
-	expectedRuns := float64(len(bits)/2) + 1
-	stdDev := math.Sqrt(float64(len(bits)-1) / 4)
-
-	// Check if the observed run count is within a reasonable range
-	// We use a 3-sigma confidence interval
+	// For m independent fair bits, the m-1 transition indicators are also
+	// independent fair bits: runs = 1 + Binomial(m-1, 1/2).
+	transitions := len(bits) - 1
+	expectedRuns := 1 + float64(transitions)/2
 	deviation := math.Abs(float64(runCount) - expectedRuns)
-	maxDeviation := 3.0 * stdDev
+	maxDeviation := fairBitCountDeviation(transitions)
 
 	if deviation > maxDeviation {
 		return &randomnessError{
@@ -226,41 +236,8 @@ func runsTest(data []byte) error {
 	return nil
 }
 
-// byteDistributionTest checks if the distribution of byte values is uniform.
-func byteDistributionTest(data []byte) error {
-	// Count occurrences of each byte value
-	counts := make([]int, 256)
-	for _, b := range data {
-		counts[b]++
-	}
-
-	// For a uniform distribution, each value should appear approximately
-	// the same number of times
-	expectedCount := float64(len(data)) / 256
-
-	// Check if the distribution is within a reasonable range
-	// We use a looser bound here since perfect uniformity is not expected
-	// with finite samples
-	maxDeviation := 4.0 * math.Sqrt(expectedCount)
-
-	for i, count := range counts {
-		deviation := math.Abs(float64(count) - expectedCount)
-		if deviation > maxDeviation {
-			return &randomnessError{
-				test:     "byte distribution",
-				value:    i,
-				got:      float64(count),
-				expected: expectedCount,
-				maxDev:   maxDeviation,
-			}
-		}
-	}
-
-	return nil
-}
-
 // calculateEntropy calculates the Shannon entropy (in bits per symbol)
-// of the data, which measures the randomness/unpredictability.
+// in the sample histogram, which does not measure unpredictability.
 func calculateEntropy(data []byte) float64 {
 	if len(data) == 0 {
 		return 0
@@ -284,9 +261,11 @@ func calculateEntropy(data []byte) float64 {
 	return entropy
 }
 
-// autocorrelationTest checks for correlations between bits at different positions,
-// which would indicate non-randomness.
+// autocorrelationTest checks for unusually high or low bit agreement at fixed lags.
 func autocorrelationTest(data []byte) error {
+	if len(data) == 0 {
+		return fmt.Errorf("autocorrelation test requires a nonempty sample")
+	}
 	// Extract bits into a slice for easier processing
 	bits := make([]bool, len(data)*8)
 	for i, b := range data {
@@ -311,13 +290,13 @@ func autocorrelationTest(data []byte) error {
 			}
 		}
 
-		// Calculate correlation coefficient
+		// Fraction of agreeing bit pairs, not a Pearson correlation coefficient.
 		correlation := float64(matchCount) / float64(comparisonCount)
 
-		// For a random sequence, the correlation should be close to 0.5
+		// For a fixed lag, the comparisons form disjoint chains. Under IID
+		// fair input bits their equality indicators are independent fair bits.
 		deviation := math.Abs(correlation - 0.5)
-		// Use a slightly more lenient boundary (4-sigma instead of 3-sigma)
-		maxDeviation := 4.0 * math.Sqrt(0.25/float64(comparisonCount))
+		maxDeviation := fairBitCountDeviation(comparisonCount) / float64(comparisonCount)
 
 		if deviation > maxDeviation {
 			return &randomnessError{
@@ -336,6 +315,9 @@ func autocorrelationTest(data []byte) error {
 // chiSquareTest performs a chi-square test on the byte frequencies
 // to check for uniform distribution.
 func chiSquareTest(data []byte) error {
+	if len(data) < 5*256 {
+		return fmt.Errorf("chi-square test requires at least %d sample bytes", 5*256)
+	}
 	// Count occurrences of each byte value
 	counts := make([]int, 256)
 	for _, b := range data {
@@ -350,22 +332,17 @@ func chiSquareTest(data []byte) error {
 		chiSquare += (deviation * deviation) / expectedCount
 	}
 
-	// For 255 degrees of freedom (256 categories - 1),
-	// the chi-square value should be approximately 255 ± some reasonable margin
-	// if the distribution is uniform
-	expectedChiSquare := 255.0
-	stdDev := math.Sqrt(2 * 255)
-	// Use a more lenient threshold for chi-square (5-sigma instead of 3-sigma)
-	// This is reasonable as crypto/rand is known to be secure but can have statistical variations in small samples
-	maxDeviation := 5.0 * stdDev
-
-	if math.Abs(chiSquare-expectedChiSquare) > maxDeviation {
-		return &randomnessError{
-			test:     "chi-square",
-			got:      chiSquare,
-			expected: expectedChiSquare,
-			maxDev:   maxDeviation,
-		}
+	// Pearson's statistic approaches chi-square with 255 degrees of freedom.
+	// Laurent-Massart bounds give two tail probabilities of at most exp(-x)
+	// for that limiting distribution. This is an asymptotic calibration for
+	// the finite byte histogram, not an exact probability or security claim.
+	// https://doi.org/10.1214/aos/1015957395 (equations 4.3 and 4.4).
+	const degrees = 255
+	x := math.Log(2 / statisticalTestAlpha)
+	lower := degrees - 2*math.Sqrt(degrees*x)
+	upper := degrees + 2*math.Sqrt(degrees*x) + 2*x
+	if chiSquare < lower || chiSquare > upper {
+		return fmt.Errorf("chi-square test failed: got %.6f, expected within [%.6f, %.6f]", chiSquare, lower, upper)
 	}
 
 	return nil
@@ -374,7 +351,6 @@ func chiSquareTest(data []byte) error {
 // randomnessError represents a failure in a randomness test.
 type randomnessError struct {
 	test     string  // The name of the test that failed
-	value    int     // Optional value (e.g., byte value)
 	lag      int     // Optional lag value for autocorrelation
 	got      float64 // The observed value
 	expected float64 // The expected value for truly random data
@@ -382,32 +358,8 @@ type randomnessError struct {
 }
 
 func (e *randomnessError) Error() string {
-	if e.value >= 0 {
-		return formatError(e.test, float64(e.value), e.got, e.expected, e.maxDev)
-	}
 	if e.lag > 0 {
-		return formatErrorWithLag(e.test, e.lag, e.got, e.expected, e.maxDev)
+		return fmt.Sprintf("%s test failed for lag %d: got %.6f, expected %.6f±%.6f", e.test, e.lag, e.got, e.expected, e.maxDev)
 	}
-	return formatErrorNoValue(e.test, e.got, e.expected, e.maxDev)
-}
-
-func formatError(test string, value, got, expected, maxDev float64) string {
-	return formatErrorWithValue(test, "value", value, got, expected, maxDev)
-}
-
-func formatErrorWithLag(test string, lag int, got, expected, maxDev float64) string {
-	return formatErrorWithValue(test, "lag", float64(lag), got, expected, maxDev)
-}
-
-func formatErrorWithValue(test, label string, value, got, expected, maxDev float64) string {
-	return f("%s test failed for %s %.0f: got %.6f, expected %.6f±%.6f", test, label, value, got, expected, maxDev)
-}
-
-func formatErrorNoValue(test string, got, expected, maxDev float64) string {
-	return f("%s test failed: got %.6f, expected %.6f±%.6f", test, got, expected, maxDev)
-}
-
-// Helper function for string formatting
-func f(format string, args ...interface{}) string {
-	return fmt.Sprintf(format, args...)
+	return fmt.Sprintf("%s test failed: got %.6f, expected %.6f±%.6f", e.test, e.got, e.expected, e.maxDev)
 }
