@@ -315,3 +315,14 @@ For encoding and decoding, input and output directories must be separate: neithe
 ## License
 
 [MIT License](LICENSE)
+
+## Last Security Review
+
+October 26, 2026, by Claude (Mythos 5.1, `claude-mythos-5-1`) in Claude Code, focused on two threats: a holder of fewer than K collections recovering plaintext, and a user getting less protection than they assumed. Findings were addressed in [pull request #3](https://github.com/rayozzie/padlock/pull/3). This was a source review with mechanical checks, not a formal proof or a certified audit.
+
+- **Splitting (`pkg/pad`):** encoder and decoder were read and then checked by an independent brute-force harness for every K-of-N up to 8 (the repository's tests cover N=26). Every pad is fresh and used once, every K-subset reconstructs, and every XOR piece visible to fewer than K collections is masked by a pad they do not hold. The property is structural, was checked exhaustively, and the construction is standard replicated additive sharing.
+- **Randomness (`pkg/pad/rng*.go`):** each output is XORed with a fresh `crypto/rand` read, so the default is never weaker than the OS source; external sources feed every seed and ChaCha20 reseed, so a predictable OS source still leaves a 256-bit key; a hostile external source cannot reduce protection below the OS-only level; any source failure stops encoding before outputs are touched. These follow from XOR with an independent uniform input and were confirmed on every code path.
+- **Decode and filesystem:** pads are fresh per run, so collections from different runs reveal nothing together and are rejected; duplicates never count toward K; restore is confined to the destination with exclusive creation and sparse-entry rejection; no plaintext or collection data is written to temporary files; no file contents or entropy credentials appear in logs or errors.
+- **Published binaries:** checksums verify, embedded revisions match clean commits, and the test suite and CI matrix pass.
+
+Not examined: the quality of any operating system's random generator (the documented assumption), host compromise and memory side channels, and authentication of restored contents, a documented non-goal.
