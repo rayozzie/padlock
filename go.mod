@@ -1,6 +1,6 @@
 module github.com/rayozzie/padlock
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/seehuhn/mt19937 v1.0.0
