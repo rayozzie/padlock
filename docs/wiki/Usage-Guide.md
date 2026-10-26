@@ -4,7 +4,7 @@ This guide provides detailed instructions for using the Padlock utility to secur
 
 ## Installation
 
-Padlock requires Go 1.27.2 or later to build from source. Use a supported release with current security patches:
+Padlock requires Go 1.27.3 or later to build from source. Use a supported release with current security patches:
 
 ```bash
 # Clone the repository

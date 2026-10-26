@@ -205,7 +205,7 @@ The generator is reused across chunks. New reads consume new output, but chunk b
 
 ### Building from Source
 
-Install Git and Go 1.27.2 or later; use a supported Go release with current security
+Install Git and Go 1.27.3 or later; use a supported Go release with current security
 patches. Then clone the repository and build from its root:
 
 ```bash

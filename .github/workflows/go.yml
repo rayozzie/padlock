@@ -108,12 +108,31 @@ jobs:
           go-version-file: go.mod
       # Install for the runner before setting the cross-compilation target.
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
-      - name: Build and check reachable vulnerabilities
+      - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           GOARM: '7'
           CGO_ENABLED: '0'
+        run: go build -o "$RUNNER_TEMP/padlock" ./cmd/padlock
+      - name: Check reachable vulnerabilities in source
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: '7'
+          CGO_ENABLED: '0'
+        run: govulncheck ./...
+      - name: Check packaged executable checksum and vulnerabilities
+        env:
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
         run: |
-          go build -o "$RUNNER_TEMP/padlock" ./cmd/padlock
-          govulncheck ./...
+          platform="$TARGET_OS"
+          arch="$TARGET_ARCH"
+          executable=padlock
+          if [[ "$platform" == darwin ]]; then platform=macos; fi
+          if [[ "$arch" == arm ]]; then arch=armv7; fi
+          if [[ "$platform" == windows ]]; then executable=padlock.exe; fi
+          cd "bin/$platform-$arch"
+          sha256sum -c "$executable.sha256.txt"
+          govulncheck -mode=binary "$executable"
