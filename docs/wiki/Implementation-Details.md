@@ -121,7 +121,7 @@ Both encoding and decoding operate as streaming pipelines:
 
 1. **Encoding Pipeline**:
    ```
-   Input Directory → Serialization → Compression → Chunk Processing → Collection Output
+   Input Directory → Serialization → Compression → Chunk Padding → Chunk Processing → Collection Output
    ```
 
 2. **Decoding Pipeline**:
@@ -154,7 +154,7 @@ The default chunk limit is 2 MiB of encoded payload per collection, before heade
 
 Initialization uses O(N) storage. The encoder keeps at most N times the configured collection chunk size in current payload buffers, plus its input buffer, compression workspace, RNG workspace, and output-format buffers. Decoding buffers one payload per supplied collection for the current chunk, with additional space for buffer growth, file-format processing, and reconstructed data. Directory listings, TAR chunk indexes, and the Go runtime also consume memory; these are not hard process-memory limits. Large thresholds still increase CPU work and output size: 13-of-26 has 10,400,600 combinations, and each input byte produces 5,200,300 payload bytes per collection. Chunk size controls buffering, not this expansion.
 
-Dry-run encoding uses the same streaming TAR and optional gzip pipeline as actual encoding. Counting readers measure the serialized input before compression and the complete compressed stream, including its trailer, as bytes pass through. The counters retain no payload data. Counts are reported only after successful encoding reaches the end of the stream, which also ensures the compressor has finished updating its input count. Uncompressed dry runs count the TAR stream too; input counts include archive headers and padding. The collection counters measure encoded frames before PNG or collection-TAR overhead, so they are not exact on-disk space estimates.
+Dry-run encoding uses the same streaming TAR and optional gzip pipeline as actual encoding. Counting readers measure the serialized input before compression and the complete compressed stream, including its trailer, as bytes pass through. The counters retain no payload data. Counts are reported only after successful encoding reaches the end of the stream, which also ensures the compressor has finished updating its input count. Uncompressed dry runs count the TAR stream too; input counts include archive headers and padding. The collection counters measure encoded frames before PNG or collection-TAR overhead, so they are not exact on-disk space estimates. The padding appended to align the stream to whole input chunks is reported separately from the compressed size.
 
 Every encoding run draws a fresh public 128-bit backup identifier from the OS, separately from the secret pad stream. Each chunk begins with a one-byte header length followed by the text `collection:chunkNumber:dataBytes:backupID`, where the identifier is 32 hexadecimal characters. BIN files and PNG payloads carry the same header. A new identifier is generated for every `Pad.Encode` call, even when the caller reuses the `Pad` instance.
 
@@ -166,7 +166,7 @@ PNG stores the encoded frame in a custom `rAWd` chunk. Its payload CRC catches s
 
 ### TAR Collection Support
 
-The CLI streams one uncompressed outer TAR per collection by default. The serialized source directory is gzip-compressed before splitting; it is a separate stream from the outer collection containers. Library callers can choose uncompressed source serialization. `-files` writes loose collection chunks instead.
+The CLI streams one uncompressed outer TAR per collection by default. The serialized source directory is gzip-compressed before splitting; it is a separate stream from the outer collection containers. Library callers can choose uncompressed source serialization. `-files` writes loose collection chunks instead. `pkg/file/padding.go` then pads the stream to a whole number of input chunks with an additional stored-block gzip member (or zero bytes when uncompressed), so that chunk headers and collection sizes reveal only the chunk count; restore drains bytes after the archive's end marker, so earlier decoders accept padded backups.
 
 Discovery identifies named or renamed TARs from metadata, without temporary extraction. When opening a regular TAR for decoding, the reader scans headers, rejects sparse entries before skipping their bodies, and indexes chunk names with 64-bit offsets and sizes. It skips ordinary bodies with seeks, checking their physical extent, and sorts chunk records numerically without collapsing duplicate names or numbers. Payload reads use bounded sections of the same open file. Memory for the index grows with the number and length of chunk names, not their payload sizes. This adds a metadata pass before decoding; an index is not a snapshot or an authenticity check. Loose files use the same numeric ordering.
 

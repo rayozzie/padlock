@@ -47,15 +47,13 @@ type Format string
 
 const (
 	// FormatBin represents a raw binary format for maximum efficiency.
-	// This format stores chunk data directly as binary files with minimal overhead,
-	// making it suitable for internal or back-end storage where stealth is not required.
+	// This format stores chunk data directly as binary files with minimal overhead.
 	FormatBin Format = "bin"
 
-	// FormatPNG stores encoded frames inside a PNG custom chunk.
-	// This format embeds chunk data within PNG image files, making the data
-	// appear as ordinary images to casual observers. It provides a level of
-	// stealth at the cost of some storage efficiency.
-	// The encoded chunks are stored in a custom PNG chunk type 'rAWd'.
+	// FormatPNG stores encoded frames inside a PNG custom chunk ('rAWd').
+	// The container is a 1x1 image carrying the payload and a CRC that detects
+	// some accidental damage. It is not concealment: the filenames, the custom
+	// chunk, and the file sizes identify Padlock output.
 	FormatPNG Format = "png"
 )
 
@@ -102,8 +100,7 @@ type Formatter interface {
 // BinFormatter implements the Formatter interface for binary file storage.
 //
 // This formatter stores chunk data directly as binary files with minimal overhead,
-// making it suitable for internal or backend storage where efficiency is prioritized
-// over stealth. Binary storage provides:
+// making it suitable for storage where efficiency is prioritized. Binary storage provides:
 // - Maximum storage efficiency (no format overhead)
 // - Direct access to raw data
 // - Simplicity in implementation and debugging

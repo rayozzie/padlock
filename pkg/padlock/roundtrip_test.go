@@ -124,6 +124,14 @@ func TestEmptyDirectoryArchiveStillDecodes(t *testing.T) {
 				if err := decoder.Decode(ctx, readers, &decoded); err != nil {
 					t.Fatalf("valid backup of an empty directory failed to decode: %v", err)
 				}
+				// The stream is padded to one whole input chunk (2-of-2: the full
+				// chunk size), and restore must accept it as a complete archive.
+				if decoded.Len() != 4096 {
+					t.Fatalf("empty directory backup decoded to %d bytes, want one padded 4096-byte chunk", decoded.Len())
+				}
+				if err := file.ValidateDirectoryStream(ctx, bytes.NewReader(decoded.Bytes())); err != nil {
+					t.Fatalf("padded empty directory archive failed validation: %v", err)
+				}
 				var stream io.Reader = &decoded
 				if compression == CompressionGzip {
 					stream, err = file.DecompressStreamToStream(ctx, stream)
@@ -133,8 +141,9 @@ func TestEmptyDirectoryArchiveStillDecodes(t *testing.T) {
 				}
 				// Even an empty source produces two 512-byte TAR end records.
 				// These must survive decoding rather than trigger the no-chunk guard.
+				// The padding that follows them decodes to zero bytes only.
 				got, err := io.ReadAll(stream)
-				if err != nil || !bytes.Equal(got, make([]byte, 1024)) {
+				if err != nil || len(got) < 1024 || bytes.ContainsFunc(got, func(r rune) bool { return r != 0 }) {
 					t.Fatalf("empty directory archive did not survive decoding: got %d bytes, err=%v", len(got), err)
 				}
 			})

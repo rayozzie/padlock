@@ -94,6 +94,43 @@ func TestInvalidRequiredLeavesOutputsUntouchedCLI(t *testing.T) {
 	}
 }
 
+func TestCopiesWithoutRequiredFailsCLI(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"three", []string{"-copies", "3"}},
+		{"equals_five", []string{"-copies=5"}},
+		{"twenty_six", []string{"--copies", "26"}},
+		{"last_value_three", []string{"-copies", "2", "-copies", "3"}},
+	} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dry=%t", tc.name, dryRun), func(t *testing.T) {
+				input, outputs, _ := cliFixture(t, 1)
+				root := filepath.Dir(input)
+				before := snapshotOutputLayoutCLI(t, root)
+				args := append([]string{"encode", input, outputs[0], "-format", "bin"}, tc.args...)
+				if dryRun {
+					args = append(args, "-dryrun")
+				}
+				output, err := runCLI(t, args...)
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || !strings.Contains(output, "-required must be specified when -copies is greater than 2") {
+					t.Fatalf("expected a missing -required error, got %v:\n%s", err, output)
+				}
+				for _, misleading := range []string{"Encode complete", "DRY RUN SIZE REPORT", "panic:"} {
+					if strings.Contains(output, misleading) {
+						t.Errorf("missing threshold reported %q:\n%s", misleading, output)
+					}
+				}
+				if after := snapshotOutputLayoutCLI(t, root); !maps.Equal(before, after) {
+					t.Error("missing threshold changed the source or output layout")
+				}
+			})
+		}
+	}
+}
+
 func TestInvalidRequiredPrecedesEntropySetupCLI(t *testing.T) {
 	input, outputs, _ := cliFixture(t, 1)
 	missingEntropy := filepath.Join(filepath.Dir(input), "missing-entropy")

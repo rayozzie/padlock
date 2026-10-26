@@ -18,6 +18,7 @@ package pad
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -266,6 +267,9 @@ func extractFromChunkName(chunkName string) (collName string, chunkNumber int, c
 //   - Confidentiality depends on the pad randomness described in the package documentation
 //   - The same pad must NEVER be reused
 //   - Each chunk has a unique name to ensure it's properly tracked during decoding
+//   - Chunk headers and collection sizes reveal the input length. Callers for
+//     whom the exact length is sensitive should pad the input to a multiple of
+//     InputChunkBytes, as padlock.EncodeDirectory does
 func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader, randomSource RNG, newChunk NewChunkFunc, chunkFormat string) error {
 	log := trace.FromContext(ctx).WithPrefix("encode")
 	if err := validateCopies(p.TotalCopies, p.RequiredCopies); err != nil {
@@ -286,16 +290,21 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 		return err
 	}
 
-	// Public metadata uses a separate OS draw, never bytes from the secret pad
-	// stream. Generate it per Encode call, including when the Pad is reused.
-	var id [backupIDBytes]byte
-	if _, err := crand.Read(id[:]); err != nil {
+	// Public metadata is derived from a separate OS draw through SHA-256, so
+	// the collections never contain raw generator output: pad bytes are always
+	// masked by the mixer, and the identifier is a one-way function of bytes
+	// that are never published. Generate it per Encode call, including when
+	// the Pad is reused.
+	var idSeed [32]byte
+	if _, err := crand.Read(idSeed[:]); err != nil {
 		return fmt.Errorf("generate backup identifier: %w", err)
 	}
-	backupID := hex.EncodeToString(id[:])
+	digest := sha256.Sum256(idSeed[:])
+	clear(idSeed[:])
+	backupID := hex.EncodeToString(digest[:backupIDBytes])
 
 	// Compute a size of input to process in each chunk, given the number of ciphers that must fit into the chunk
-	inputChunkBytes := outputChunkBytes / p.PermutationCount
+	inputChunkBytes := p.InputChunkBytes(outputChunkBytes)
 	log.Debugf("Starting encode with inputChunkBytes=%d outputChunkBytes=%d", inputChunkBytes, outputChunkBytes)
 
 	// Process input data chunk by chunk until end of stream
@@ -327,6 +336,16 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 
 	log.Debugf("Encode completed successfully")
 	return nil
+}
+
+// InputChunkBytes returns the number of input bytes consumed per chunk for the
+// given output chunk size. Each input byte expands to PermutationCount payload
+// bytes in every collection.
+func (p *Pad) InputChunkBytes(outputChunkBytes int) int {
+	if p.PermutationCount < 1 {
+		return 0
+	}
+	return outputChunkBytes / p.PermutationCount
 }
 
 // encodeOneChunk splits a data chunk across every K-collection combination.

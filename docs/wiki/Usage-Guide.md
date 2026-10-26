@@ -41,10 +41,10 @@ padlock encode <inputDir> <outputDir> [options]
 #### Options
 
 - `-copies N`: Number of collections to create (2–26; defaults to 2 with one output directory, or the directory count with multiple outputs). An explicit value must match the number of output directories when more than one is supplied. A mismatch fails before creating or clearing outputs, including with `-dryrun`.
-- `-required K`: Required distinct collections, with 2 ≤ K ≤ N. Defaults to 2 with one output directory and all collections with multiple output directories. Explicit invalid values fail before outputs are created or cleared.
+- `-required K`: Required distinct collections, with 2 ≤ K ≤ N. It must be given whenever `-copies` is greater than 2 with one output directory; with multiple output directories it defaults to all of them. Missing or invalid values fail before outputs are created or cleared, including in dry runs.
 - `-format FORMAT`: Output format: bin or png (default: png)
 - `-clear`: Clear output directory if not empty
-- `-chunk SIZE`: Maximum payload bytes per collection chunk, before headers and container overhead (default: 2 MiB). The minimum is C(N-1,K-1), for example 6 bytes for 3-of-5.
+- `-chunk SIZE`: Maximum payload bytes per collection chunk, before headers and container overhead (default: 2 MiB). The minimum is C(N-1,K-1), for example 6 bytes for 3-of-5. Every backup is padded to a whole number of input chunks (`-chunk` ÷ C(N-1,K-1) bytes), so collection sizes reveal only the chunk count rather than the exact compressed length.
 - `-verbose`: Enable detailed debug output
 - `-files`: Create individual files for each collection instead of TAR archives (default: creates TAR archives)
 - `-dryrun`: Calculate and display size information without actually writing output files
@@ -152,7 +152,7 @@ padlock decode ~/Collections ~/Restored -dryrun
 
 Dry runs process the full input stream without creating, clearing, or writing output files. They can take substantial time and still require chunk buffers and directory metadata.
 
-- Encode streams TAR serialization and gzip, then counts the encoded frames. Input counts include TAR headers and padding. Collection counts exclude PNG and outer collection-TAR overhead, so the report is not an exact estimate of on-disk space.
+- Encode streams TAR serialization and gzip, then counts the encoded frames. Input counts include TAR headers and padding. Collection counts exclude PNG and outer collection-TAR overhead, so the report is not an exact estimate of on-disk space. The report also shows the chunk alignment padding added after compression.
 - Decode reconstructs and validates the complete decoded archive, including its end and compressed-stream checks. The decompressed size includes directory-TAR framing. No restored files are written, and no collection archive is temporarily extracted.
 - Decode dry runs detect the same backup mixing, duplicate conflicts, incomplete chunks, sparse entries, and unsupported entry types as normal streaming validation. They cannot certify authenticity or predict destination-specific failures such as insufficient disk space or conflicting existing files.
 - External entropy options are checked for syntax in encode dry runs, but the sources are not opened or consumed. A dry run does not establish that they will be available for a real encode.

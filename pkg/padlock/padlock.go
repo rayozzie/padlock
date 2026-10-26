@@ -462,6 +462,12 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 		}
 	}
 
+	// Hide the exact compressed length, which depends on the content: pad the
+	// stream to a whole number of input chunks so that chunk headers and
+	// collection sizes reveal only the chunk count. Restore drains the padding.
+	padder := file.NewChunkPadder(inputStream, p.InputChunkBytes(cfg.ChunkSize), cfg.Compression == CompressionGzip)
+	inputStream = padder
+
 	// Define a callback function that creates chunk writers for the encoding process
 	// Each time the pad encoder needs to write a chunk, this function is called
 	//
@@ -667,6 +673,7 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 			}
 			log.Infof("Compression ratio:                %.2f%%", compressionRatio)
 		}
+		log.Infof("Chunk alignment padding:          %s bytes", FormatByteSize(padder.Padding()))
 
 		if sizeTracker.EncodeCollectionsTotalSize > 0 {
 			// Calculate each collection size as an integer (all collections are same size)
@@ -688,6 +695,11 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 
 		// End the report with an asterisk line
 		log.Infof("***")
+	}
+
+	// Repeat the symbolic link warning at the end, where it is hard to miss.
+	if skipped := tarStream.SkippedSymlinks(); skipped > 0 {
+		log.Infof("WARNING: %d symbolic link(s) in the input were skipped and are not in this backup", skipped)
 	}
 
 	// Log differently depending on whether using single or multiple output directories

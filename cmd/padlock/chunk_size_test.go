@@ -20,7 +20,7 @@ func TestInvalidChunkSizeCLI(t *testing.T) {
 	}{
 		{"negative", 1, []string{"-chunk", "-1"}, 1},
 		{"zero", 1, []string{"-chunk", "0"}, 1},
-		{"two_of_three", 1, []string{"-copies", "3", "-chunk", "1"}, 2},
+		{"two_of_three", 1, []string{"-copies", "3", "-required", "2", "-chunk", "1"}, 2},
 		{"three_of_five", 1, []string{"-copies", "5", "-required", "3", "-chunk", "5"}, 6},
 		{"default_too_small", 1, []string{"-copies", "26", "-required", "13"}, 5200300},
 		{"multiple_outputs", 3, []string{"-required", "2", "-chunk", "1"}, 2},

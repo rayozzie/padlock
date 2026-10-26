@@ -6,7 +6,7 @@ Padlock splits data using random pads, XOR, and combinatorial distribution. Its 
 
 For each data chunk and each combination of K collections, Padlock requests K-1 pads, XORs them with the data to form the final piece, and distributes the K pieces across the combination. Any K intact collections from the same backup contain a complete combination and can recover the data.
 
-Perfect secrecy for fewer than K collections requires every pad to be uniformly random, independent of the data and all other pads, secret from the attacker, and never reused. Under those assumptions, each incomplete combination has a missing piece that hides the data. This protects the contents, not visible metadata such as collection sizes and threshold parameters.
+Perfect secrecy for fewer than K collections requires every pad to be uniformly random, independent of the data and all other pads, secret from the attacker, and never reused. Under those assumptions, each incomplete combination has a missing piece that hides the data. This protects the contents, not visible metadata such as threshold parameters and the chunk count. The archive is compressed before splitting, so its exact length would depend on its contents; Padlock pads every encoded stream to a whole number of input chunks, and collection sizes then reveal only the compressed length rounded up to the input chunk size.
 
 Underdetermined equations alone do not prove secrecy when the pads can be predicted or are correlated. The ideal proof does not establish that the default generator satisfies these assumptions.
 
@@ -58,11 +58,12 @@ This option adds source diversity without changing XOR splitting or the backup f
 
 ## Operational Boundaries
 
-1. **Protect the encoding host:** The generators run in one process and share an OS dependency. Their locks protect concurrent access, not against a compromised host.
+1. **Protect the encoding host:** The generators run in one process and share an OS dependency. Their locks protect concurrent access, not against a compromised host. The host also keeps the plaintext: Padlock leaves the input directory in place, and filesystem snapshots, swap and hibernation files, search indexes, terminal scrollback (file names are logged during encoding), and shell history (including any `-entropy-url` token) can retain copies. Encode on encrypted or disposable storage and remove the source deliberately.
 2. **Protect the collections:** Access to K intact collections permits reconstruction. Store them separately according to the intended threshold.
 3. **Do not reuse pads:** Never reuse pad bytes for different data or restart generators from previously used state. New reads do not prove independent entropy, and chunk boundaries do not provide a forward-secrecy guarantee after state compromise.
-4. **Expect visible metadata:** Collection names, counts, sizes, and the public backup identifier expose some information about a backup. Matching identifiers associate collections with the same encoding run.
+4. **Expect visible metadata:** Collection names, counts, the chunk count, and the public backup identifier expose some information about a backup. Sizes are padded to whole input chunks so they do not reveal the exact, content-dependent compressed length. The identifier is a hash of a separate OS draw, so no raw generator output appears in the collections. Matching identifiers associate collections with the same encoding run.
 5. **Distinguish error checks from authenticity:** Backup identifiers detect accidental mixing across encoding runs. First-chunk identifiers are compared before destination preparation, and later chunks are checked during decoding. These identifiers, CRCs, and archive validation do not authenticate contents or reliably detect deliberate alterations.
+6. **Check the symbolic link warning:** Links inside the input are skipped, not followed. Encoding reports each one and ends with a count; a backup that omitted them is not a complete copy.
 
 ## Verification and Validation
 
