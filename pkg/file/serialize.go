@@ -10,14 +10,27 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/rayozzie/padlock/pkg/trace"
 )
 
+// DirectoryStream is a serialized input directory. Closing it stops the
+// serializer; reading to io.EOF completes it.
+type DirectoryStream struct {
+	*io.PipeReader
+	skippedSymlinks atomic.Int64
+}
+
+// SkippedSymlinks reports how many symbolic links inside the input were left
+// out of the archive. The count is final once Read has returned io.EOF.
+func (s *DirectoryStream) SkippedSymlinks() int64 { return s.skippedSymlinks.Load() }
+
 // SerializeDirectoryToStream resolves the input directory path and streams its
-// contents as TAR. Symlinks within that directory are skipped.
-func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCloser, error) {
+// contents as TAR. Symlinks within that directory are skipped; each one is
+// reported at normal logging level and counted on the returned stream.
+func SerializeDirectoryToStream(ctx context.Context, inputDir string) (*DirectoryStream, error) {
 	log := trace.FromContext(ctx).WithPrefix("serialize")
 	log.Debugf("Serializing directory to tar stream: %s", inputDir)
 	if err := ValidateInputDirectory(ctx, inputDir); err != nil {
@@ -31,6 +44,7 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 	}
 	inputDir = root
 	pr, pw := io.Pipe()
+	stream := &DirectoryStream{PipeReader: pr}
 
 	go func() {
 		defer pw.Close()
@@ -56,8 +70,14 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 				return nil
 			}
 
-			// Skip symlinks
+			// Skip symlinks, but say so: the link's target is not in this backup.
 			if info.Mode()&os.ModeSymlink != 0 {
+				stream.skippedSymlinks.Add(1)
+				name := path
+				if rel, err := filepath.Rel(inputDir, path); err == nil {
+					name = rel
+				}
+				log.Infof("WARNING: symbolic link %s skipped; its target is not in this backup", name)
 				return nil
 			}
 
@@ -131,7 +151,7 @@ func SerializeDirectoryToStream(ctx context.Context, inputDir string) (io.ReadCl
 		log.Debugf("Directory serialization complete: %d files, %d bytes", fileCount, totalBytes)
 	}()
 
-	return pr, nil
+	return stream, nil
 }
 
 // DeserializeDirectoryFromStream takes a tar stream and extracts its contents

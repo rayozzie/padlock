@@ -40,8 +40,8 @@ Parameters:
 Options:
   -copies N         Number of collections to create (must be between 2 and 26, default: 2)
                     With multiple output directories, defaults to their count; explicit values must match
-  -required REQUIRED  Minimum collections required for reconstruction (2 through -copies; default: 2)
-                    Defaults to all collections when multiple output directories are provided
+  -required REQUIRED  Minimum collections required for reconstruction (2 through -copies)
+                    Must be given when -copies is greater than 2; defaults to all collections with multiple output directories
   -format FORMAT    Output format: bin or png (default: png)
   -clear            Clear output directories if not empty
   -chunk SIZE       Maximum payload bytes per collection chunk, before headers (default: 2 MiB)
@@ -86,7 +86,7 @@ func handleEncode() {
 	// Parse flags
 	fs := flag.NewFlagSet("encode", flag.ExitOnError)
 	nVal := fs.Int("copies", 2, "number of collections (2-26; must match multiple output directories)")
-	reqVal := fs.Int("required", 2, "minimum collections required for reconstruction (2 through -copies; defaults to all collections with multiple output directories)")
+	reqVal := fs.Int("required", 2, "minimum collections required for reconstruction (2 through -copies; must be given when -copies is greater than 2; defaults to all collections with multiple output directories)")
 	formatVal := fs.String("format", "png", "bin or png (default: png)")
 	clearVal := fs.Bool("clear", false, "clear output directory if not empty")
 	chunkVal := fs.Int("chunk", 2*1024*1024, "maximum payload bytes per collection chunk before headers; minimum depends on -copies and -required (default: 2 MiB)")
@@ -183,6 +183,12 @@ func handleEncode() {
 	// Validate flags
 	if *nVal < 2 || *nVal > 26 {
 		log.Fatalf("Error: Number of collections (-copies) must be between 2 and 26, got %d", *nVal)
+	}
+
+	// A larger copy count without an explicit threshold would silently produce
+	// the weakest split, in which any 2 collections recover everything.
+	if len(outputDirs) <= 1 && *nVal > 2 && !requiredSet {
+		log.Fatalf("Error: -required must be specified when -copies is greater than 2 (choose a value from 2 through %d)", *nVal)
 	}
 
 	// If -required not explicitly set on command line, default to same as copies when using multiple output dirs

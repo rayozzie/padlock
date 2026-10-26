@@ -89,7 +89,6 @@ func TestEncodeRequiredFlag(t *testing.T) {
 		{"multiple_explicit_three", 4, []string{"-required", "3"}, 4, 3},
 		{"multiple_omitted", 3, nil, 3, 3},
 		{"two_outputs_omitted", 2, nil, 2, 2},
-		{"single_omitted", 1, []string{"-copies", "3"}, 3, 2},
 		{"single_explicit_two", 1, []string{"-copies", "3", "-required", "2"}, 3, 2},
 		{"single_invalid_then_valid", 1, []string{"-copies", "3", "-required", "0", "-required", "2"}, 3, 2},
 		{"copies_multiple_two", 2, []string{"-copies", "2"}, 2, 2},
