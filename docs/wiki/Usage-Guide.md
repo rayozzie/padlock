@@ -48,6 +48,8 @@ padlock encode <inputDir> <outputDir> [options]
 - `-verbose`: Enable detailed debug output
 - `-files`: Create individual files for each collection instead of TAR archives (default: creates TAR archives)
 - `-dryrun`: Calculate and display size information without actually writing output files
+- `-pad-stream PATH` mixes one checked raw byte with every normal mixer byte. Use `-` for stdin and `-dryrun` to size the stream. [Hardware stream examples](../../README.md#using-a-hardware-random-stream-for-every-pad-byte)
+- `-pad-skip N` discards a known header of N bytes before checking the stream.
 - `-entropy-file PATH`: Additional raw seed bytes from a file/device/pipe; `-` reads stdin (repeatable, encode only)
 - `-entropy-url URL`: Additional seed bytes from fresh HTTPS `application/octet-stream` responses (repeatable, encode only)
 - `-entropy-timeout DURATION`: Time limit per external source open/read (default: `10s`, encode only)

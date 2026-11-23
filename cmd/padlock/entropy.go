@@ -43,7 +43,7 @@ func registerEntropyFlags(flags *flag.FlagSet) *entropyOptions {
 		opts.padSkip = n
 		return nil
 	})
-	flags.Func("pad-stream", "read every pad byte directly from a raw file, device, or pipe ('-' for stdin, encode only)", func(value string) error {
+	flags.Func("pad-stream", "XOR one checked stream byte with the normal mixer for every pad byte ('-' for stdin, encode only)", func(value string) error {
 		if value == "" || opts.padStream != "" {
 			return fmt.Errorf("supply exactly one pad stream path or '-'")
 		}
@@ -86,9 +86,9 @@ func newEntropyHTTPClient() *http.Client {
 	}
 }
 
-// prepare validates all selections before reading any source bytes. Dry runs
-// validate syntax but do not open files, read stdin, or contact URLs.
-func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []string, dryRun bool, stdin *os.File) ([]pad.RNG, func(), error) {
+// prepare validates the source selections and builds the encoder's mixer.
+// Dry runs validate syntax without opening files, reading stdin, or contacting URLs.
+func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []string, dryRun bool, stdin *os.File) (pad.RNG, func(), error) {
 	closeSources := func() {}
 	if o.timeout <= 0 {
 		return nil, closeSources, fmt.Errorf("entropy-timeout must be greater than zero")
@@ -98,14 +98,11 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	}
 	specs := o.specs
 	if o.padStream != "" {
-		if len(specs) != 0 {
-			return nil, closeSources, fmt.Errorf("-pad-stream supplies the pads directly and cannot be combined with -entropy-file or -entropy-url")
-		}
-		specs = []entropySpec{{"pad stream", o.padStream}}
+		specs = append([]entropySpec{{"pad stream", o.padStream}}, specs...)
 	}
 	seen := make(map[string]bool)
 	for i, spec := range specs {
-		key := spec.kind + ":" + spec.value
+		key := "file:" + spec.value
 		if spec.kind == "https" {
 			u, err := entropyURL(spec.value)
 			if err != nil {
@@ -120,10 +117,10 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		seen[key] = true
 	}
 	if dryRun || len(specs) == 0 {
-		return nil, closeSources, nil
+		return pad.NewDefaultRand(ctx), closeSources, nil
 	}
 
-	var sources []pad.RNG
+	var seedSources []pad.RNG
 	var files []*os.File
 	var infos []os.FileInfo
 	var stream *fileEntropySource
@@ -137,14 +134,14 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		}
 		client.CloseIdleConnections()
 	}
-	fail := func(err error) ([]pad.RNG, func(), error) {
+	fail := func(err error) (pad.RNG, func(), error) {
 		closeSources()
 		return nil, func() {}, err
 	}
 	for i, spec := range specs {
 		name := fmt.Sprintf("entropy source %d (%s)", i+1, spec.kind)
 		if spec.kind == "https" {
-			sources = append(sources, &httpEntropySource{name: name, address: spec.value, timeout: o.timeout, client: client})
+			seedSources = append(seedSources, &httpEntropySource{name: name, address: spec.value, timeout: o.timeout, client: client})
 			continue
 		}
 		f := stdin
@@ -172,8 +169,9 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		source := &fileEntropySource{name: name, file: f, timeout: o.timeout}
 		if spec.kind == "pad stream" {
 			stream = source
+		} else {
+			seedSources = append(seedSources, source)
 		}
-		sources = append(sources, source)
 	}
 	// Checking identities also catches hard links, symlinks to files outside the
 	// archive, and differently spelled paths. Do not archive or clear seed inputs.
@@ -184,12 +182,20 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 			}
 		}
 	}
+	var rng pad.RNG
+	var err error
 	if stream != nil {
 		if err := stream.startPadStream(ctx, o.padSkip); err != nil {
 			return fail(err)
 		}
+		rng, err = pad.NewRandWithPadStream(ctx, stream, seedSources...)
+	} else {
+		rng, err = pad.NewRandWithEntropy(ctx, seedSources...)
 	}
-	return sources, closeSources, nil
+	if err != nil {
+		return fail(err)
+	}
+	return rng, closeSources, nil
 }
 
 func checkEntropyOutsideDirectory(root string, sources []os.FileInfo) error {

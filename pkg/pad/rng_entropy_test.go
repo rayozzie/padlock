@@ -139,6 +139,36 @@ func TestExternalEntropyReseedFailurePreventsEncode(t *testing.T) {
 	}
 }
 
+func TestFullPadStreamDuringSoftwareReseed(t *testing.T) {
+	ctx := context.Background()
+	for _, seedBytes := range []int{InitialEntropyBytes, InitialEntropyBytes + 44} {
+		seed := &recordedEntropy{name: "seed", reader: bytes.NewReader(make([]byte, seedBytes))}
+		stream := &recordedEntropy{name: "stream", reader: bytes.NewReader([]byte{1, 2, 3, 4})}
+		rng, err := NewRandWithPadStream(ctx, stream, seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range rng.(*MultiRNG).Sources {
+			if c, ok := s.(*ChaCha20Rand); ok {
+				c.remaining = 3
+			}
+		}
+		original := bytes.Repeat([]byte{0xa5}, 4)
+		output := bytes.Clone(original)
+		err = rng.Read(ctx, output)
+		if seedBytes == InitialEntropyBytes {
+			if !errors.Is(err, io.EOF) || !bytes.Equal(output, original) {
+				t.Fatalf("local mixer reseed failure released pad output: %v", err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(stream.reads, []int{4}) || !reflect.DeepEqual(seed.reads, []int{InitialEntropyBytes, 44}) || stream.leaked || seed.leaked {
+			t.Fatalf("incorrect routing or source isolation: stream reads=%v, seed reads=%v", stream.reads, seed.reads)
+		}
+	}
+}
+
 func TestExternalEntropyCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

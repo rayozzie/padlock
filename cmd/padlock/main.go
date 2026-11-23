@@ -49,11 +49,11 @@ Options:
   -verbose          Enable detailed debug output
   -files            Create individual files for each collection instead of tar archives (default: creates tar archives)
   -dryrun           Calculate and display size information without actually writing output files
-  -pad-stream PATH  Read every pad byte directly from a raw device, pipe, or single-use file
+  -pad-stream PATH  XOR one byte from a raw device, pipe, or file with each normal mixer byte
                     Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
                     Supply fresh, private bytes on every encode. A short read stops the backup
                     Recognized headers and failed rolling health checks stop encoding
-                    Encode only. Incompatible with the seed options -entropy-file and -entropy-url
+                    Encode only. Optional -entropy-file/-entropy-url inputs seed the normal mixer
   -pad-skip N       Discard N documented header bytes once, before the pad data (default: 0)
                     Supply these extra bytes in addition to the dry-run pad count
   -entropy-file PATH  Additional seed bytes from a file, device, or pipe; '-' reads stdin
@@ -279,23 +279,14 @@ func handleEncode() {
 	}
 
 	// Open selected sources and initialize software seeds before preparing outputs.
-	sources, closeEntropy, err := entropy.prepare(ctx, inputDir, outputDirs, cfg.SizeOnly, os.Stdin)
+	rng, closeEntropy, err := entropy.prepare(ctx, inputDir, outputDirs, cfg.SizeOnly, os.Stdin)
 	if err != nil {
 		log.Fatalf("entropy setup failed: %v", err)
 	}
 	defer closeEntropy()
-	switch {
-	case entropy.padStream != "" && !cfg.SizeOnly:
-		cfg.RNG = sources[0]
-		tracer.Infof("Reading every pad byte directly from the selected stream")
-	case len(sources) == 0:
-		cfg.RNG = pad.NewDefaultRand(ctx)
-	default:
-		cfg.RNG, err = pad.NewRandWithEntropy(ctx, sources...)
-		if err != nil {
-			closeEntropy()
-			log.Fatalf("entropy initialization failed: %v", err)
-		}
+	cfg.RNG = rng
+	if entropy.padStream != "" && !cfg.SizeOnly {
+		tracer.Infof("XORing one checked stream byte with the normal mixer for every pad byte")
 	}
 	if cfg.SizeOnly && (len(entropy.specs) > 0 || entropy.padStream != "") {
 		tracer.Infof("Dry run: external entropy sources are not opened or consumed")

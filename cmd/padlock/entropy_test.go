@@ -224,7 +224,7 @@ func TestEntropyStdinCLI(t *testing.T) {
 }
 
 func TestEntropyFailurePreservesOutputCLI(t *testing.T) {
-	for _, kind := range []string{"short", "missing", "duplicate", "hardlink_duplicate", "inside_input", "inside_output", "input_hardlink", "http", "bad_timeout"} {
+	for _, kind := range []string{"short", "missing", "duplicate", "hardlink_duplicate", "pad_stream_alias", "inside_input", "inside_output", "input_hardlink", "http", "bad_timeout"} {
 		t.Run(kind, func(t *testing.T) {
 			input, outputs, _ := cliFixture(t, 1)
 			if err := os.Mkdir(outputs[0], 0700); err != nil {
@@ -250,7 +250,7 @@ func TestEntropyFailurePreservesOutputCLI(t *testing.T) {
 				}
 			case "duplicate":
 				flags = append(flags, "-entropy-file", seed)
-			case "hardlink_duplicate", "input_hardlink":
+			case "hardlink_duplicate", "pad_stream_alias", "input_hardlink":
 				alias := filepath.Join(t.TempDir(), "alias")
 				if kind == "input_hardlink" {
 					alias = filepath.Join(input, "seed")
@@ -260,6 +260,8 @@ func TestEntropyFailurePreservesOutputCLI(t *testing.T) {
 				}
 				if kind == "hardlink_duplicate" {
 					flags = append(flags, "-entropy-file", alias)
+				} else if kind == "pad_stream_alias" {
+					flags = append(flags, "-pad-stream", alias)
 				}
 			case "inside_input":
 				flags = []string{"-entropy-file", filepath.Join(input, "source.bin")}
@@ -274,6 +276,9 @@ func TestEntropyFailurePreservesOutputCLI(t *testing.T) {
 			out, err := runCLI(t, args...)
 			if err == nil || !strings.Contains(out, "entropy") || strings.Contains(out, "panic:") || strings.Contains(out, "SECRET-TOKEN") {
 				t.Fatalf("invalid entropy was not rejected cleanly: %v\n%s", err, out)
+			}
+			if kind == "pad_stream_alias" && !strings.Contains(out, "same file/device/pipe") {
+				t.Fatalf("expected source identity check: %s", out)
 			}
 			got, err := os.ReadFile(keep)
 			if err != nil || string(got) != "existing backup" {
@@ -301,7 +306,7 @@ func TestEntropyDryRunDoesNotAccessSourcesCLI(t *testing.T) {
 }
 
 func TestEntropyHTTPSAndFileCLI(t *testing.T) {
-	for _, mode := range []string{"success", "short", "status"} {
+	for _, mode := range []string{"success", "successWithPadStream", "short", "status"} {
 		t.Run(mode, func(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -334,11 +339,21 @@ func TestEntropyHTTPSAndFileCLI(t *testing.T) {
 			if err := os.WriteFile(seed, bytes.Repeat([]byte{0x17}, pad.InitialEntropyBytes), 0600); err != nil {
 				t.Fatal(err)
 			}
-			out, err := runCLI(t, "encode", input, outputs[0], "-clear", "-format", "bin", "-entropy-file", seed, "-entropy-url", server.URL+"?PRIVATE-TOKEN")
+			args := []string{"encode", input, outputs[0], "-clear", "-format", "bin", "-entropy-file", seed, "-entropy-url", server.URL + "?PRIVATE-TOKEN"}
+			var stream io.Reader
+			if mode == "successWithPadStream" {
+				args = append(args, "-pad-stream", "-", "-chunk", "1024")
+				data := make([]byte, 1024)
+				for i := range data {
+					data[i] = byte(i)
+				}
+				stream = bytes.NewReader(data)
+			}
+			out, err := runCLIWithStdin(t, stream, args...)
 			if strings.Contains(out, "PRIVATE-TOKEN") || requests.Load() != 1 {
 				t.Fatalf("unexpected HTTPS requests or exposed credentials: count=%d\n%s", requests.Load(), out)
 			}
-			if mode != "success" {
+			if mode == "short" || mode == "status" {
 				if err == nil || strings.Contains(out, "panic:") {
 					t.Fatalf("failed HTTPS source was ignored: %v\n%s", err, out)
 				}

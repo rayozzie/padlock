@@ -38,6 +38,8 @@ The default setup therefore relies on the OS RNG and generator implementations. 
 
 ### Optional Source Diversity
 
+`-pad-stream` contributes one checked byte per output byte, XORed with all five normal generators. Stream health checks operate on the hardware contribution before mixing. A predictable hardware contribution leaves those positions dependent on the local mixer. [Hardware stream assumptions and failure handling](../../README.md#using-a-hardware-random-stream-for-every-pad-byte)
+
 `-entropy-file` and `-entropy-url` allow the operator to supplement the OS source with separately supplied raw bytes. File inputs support regular files, devices, named pipes, and stdin (`-`). HTTPS endpoints must return fresh `application/octet-stream` responses. Both options can be repeated; normal operation remains offline. See the [README source contract](../../README.md#optional-external-entropy) and [Usage Guide](Usage-Guide) for examples.
 
 Each source contributes 76 fresh bytes at initialization. Padlock XORs every contribution with fresh OS bytes, assigns separate seed ranges to the four seeded generators, and retains the direct OS output provider. ChaCha20 reseeding consumes 44 more fresh bytes from every source and the OS. A failed or exhausted selected source aborts the operation, including during reseeding. Initial seeding occurs before output clearing. Dry runs do not consume sources, and decoding does not need them.

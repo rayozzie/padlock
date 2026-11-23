@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +13,56 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/cryptotest"
+	"time"
+
+	"github.com/rayozzie/padlock/pkg/pad"
 )
+
+func TestPadStreamXORWithNormalMixer(t *testing.T) {
+	input, outputs, _ := cliFixture(t, 1)
+	stream := make([]byte, 1024)
+	for i := range stream {
+		stream[i] = byte(i % 251)
+	}
+	path := filepath.Join(t.TempDir(), "stream")
+	if err := os.WriteFile(path, append([]byte("header"), stream...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.WriteFile(seed, bytes.Repeat([]byte{0xa5}, pad.InitialEntropyBytes), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, specs := range [][]entropySpec{nil, {{"file", seed}}} {
+		read := func(o entropyOptions) []byte {
+			t.Helper()
+			// Reproduce the entire local mixer, including its direct OS output.
+			// The oracle is the ordinary CLI configuration with the same OS draws.
+			cryptotest.SetGlobalRandom(t, 42)
+			rng, closeSources, err := o.prepare(context.Background(), input, outputs, false, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeSources()
+			got := make([]byte, len(stream))
+			for _, p := range [][]byte{got[:3], got[3:500], got[500:]} {
+				if err := rng.Read(context.Background(), p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return got
+		}
+		o := entropyOptions{specs: specs, timeout: time.Second}
+		local := read(o)
+		o.padStream, o.padSkip = path, 6
+		mixed := read(o)
+		for i, b := range stream {
+			if mixed[i] != local[i]^b {
+				t.Fatalf("wrong XOR at byte %d with %d seed sources", i, len(specs))
+			}
+		}
+	}
+}
 
 func TestPadStreamCLI(t *testing.T) {
 	for _, tc := range []struct {
@@ -63,20 +113,7 @@ func TestPadStreamCLI(t *testing.T) {
 			if out, err := runCLIWithStdin(t, stdin, args...); err != nil {
 				t.Fatalf("encode with exactly %d bytes: %v\n%s", count, err, out)
 			}
-			if tc.copies == "2" {
-				// In a 2-of-2 backup, the B collection contains the pad verbatim.
-				// Check every chunk to catch seed expansion, rewinds, or mixing.
-				var pads []byte
-				for i := 1; len(pads) < count; i++ {
-					frame, err := os.ReadFile(filepath.Join(outputs[0], "2B2", fmt.Sprintf("2B2_%04d.bin", i)))
-					if err != nil || len(frame) == 0 || int(frame[0])+1 >= len(frame) {
-						t.Fatalf("read chunk %d: %v", i, err)
-					}
-					pads = append(pads, frame[1+int(frame[0]):]...)
-				}
-				if !bytes.Equal(pads, stream) {
-					t.Fatal("collection pads differ from the supplied stream")
-				}
+			if !tc.stdin {
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
@@ -100,8 +137,8 @@ func TestPadStreamRejectsUnsafeInputsCLI(t *testing.T) {
 		want  string
 	}{
 		{[]string{"-pad-stream", filepath.Join(input, "source.bin")}, "outside"},
-		{[]string{"-pad-stream", "-", "-entropy-file", "-"}, "cannot be combined"},
-		{[]string{"-entropy-url", "https://example.org", "-pad-stream", "-", "-dryrun"}, "cannot be combined"},
+		{[]string{"-pad-stream", "-", "-entropy-file", "-"}, "duplicates"},
+		{[]string{"-entropy-file", "-", "-pad-stream", "-", "-dryrun"}, "duplicates"},
 		{[]string{"-pad-stream", "-", "-pad-stream", "-"}, "exactly one"},
 		{[]string{"-pad-stream="}, "exactly one"},
 		{[]string{"-pad-stream", "-", "-pad-skip", "-1"}, "nonnegative"},

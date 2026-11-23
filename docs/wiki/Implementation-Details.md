@@ -76,6 +76,8 @@ Within each collection, combinations where its letter comes first form a suffix;
 
 The mixer uses XOR only. `NewRandWithEntropy` accepts optional sources implementing the `RNG` complete-read contract, consumes 76 bytes from each at initialization, and retains them for 44-byte ChaCha20 reseeds. The caller owns their lifetimes. The CLI adapters in `cmd/padlock/entropy.go` provide bounded file/device/pipe and HTTPS reads, plus validation before output clearing. No extra sources are used unless explicitly selected, and the mixer does not hash inputs. See the [Security Model](Security-Model) for the shared dependency and the assumptions needed for secrecy.
 
+`NewRandWithPadStream` adds the full-rate stream to the mixer's output sources. Its other arguments are seed sources. The CLI checks the incoming stream before the mixer incorporates it into a pad.
+
 ### File System Operations (`pkg/file/`)
 
 The file package handles all interactions with the file system:

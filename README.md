@@ -121,7 +121,9 @@ The statistical generators remain in the mixture for algorithm diversity. Seedin
 
 ### Using a hardware random stream for every pad byte
 
-Use `-pad-stream PATH` to supply all pad bytes directly from a local hardware random generator, a pipe, or a single-use binary file. Each pad byte consumes one byte from that stream. The software pad generators are bypassed. The public backup identifier uses a separate OS random draw.
+Use `-pad-stream PATH` to mix a local hardware random generator, pipe, or single-use binary file into every pad byte. Padlock first checks the incoming stream, then computes **pad byte = checked stream byte XOR normal mixer byte**. The normal mixer includes the direct OS random source and all four seeded software generators. The public backup identifier uses a separate OS draw.
+
+If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. If part of the hardware stream is predictable, those positions retain the protection of an independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any inputs supplied through `-entropy-file` or `-entropy-url`. Those optional inputs only supplement software seeds.
 
 First, check how many bytes your backup needs. This command reads the input directory and leaves the random source untouched.
 
@@ -144,9 +146,9 @@ For a generator with a vendor utility, pipe its **raw binary output** into the e
 | 2 of 3 | 3 GiB |
 | 3 of 5 | 20 GiB |
 
-Choose a device mode that extracts randomness continuously from physical measurements. Padlock accepts the bytes the device supplies and cannot verify their quality or secrecy. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. A retained copy of the pad stream can help decrypt the backup.
+Choose a device mode that extracts randomness continuously from physical measurements. Padlock cannot verify the origin or secrecy of those bytes. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. Anyone who retains the stream knows its contribution to the XOR.
 
-**Headers.** A predictable header used as pad material can reveal the bytes it masks. Use the device's documented raw binary output. If its format has **one fixed header** followed by random bytes, discard exactly the documented length. For example, for a 64-byte header:
+**Headers.** A predictable header contributes no secret hardware randomness at those positions. Use the device's documented raw binary output. If its format has **one fixed header** followed by random bytes, discard exactly the documented length. For example, for a 64-byte header:
 
 ```bash
 padlock encode ./input ./collections -pad-stream ./fresh-device-output.bin -pad-skip 64
@@ -182,7 +184,7 @@ padlock encode ./input ./collections -copies 3 -required 2 \
 - `-entropy-timeout DURATION` limits each source open/read (default `10s`). A selected source's timeout, short read, exhaustion, or reported error stops encoding. Initial seeding completes before output directories can be cleared.
 - Dry runs validate option syntax without opening files, consuming stdin, or contacting services. They do not verify source availability. Decoding requires only the collections and never contacts these external sources.
 
-At initialization, **each external source supplies 76 bytes**. Padlock XORs those bytes with 76 fresh OS bytes and contributions from every other selected source, then assigns separate ranges to MathRand (8), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct `CryptoRand` output provider remains active. Each later ChaCha20 reseed requires **44 additional fresh bytes from every source** and the OS, before its 256 GiB generated-stream limit is exceeded. That limit measures generated RNG output, not input file size.
+At initialization, **each external seed source supplies 76 bytes**. Padlock XORs those bytes with 76 fresh OS bytes and contributions from every other selected seed source, then assigns separate ranges to MathRand (8), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct `CryptoRand` output provider remains active. Each later ChaCha20 reseed requires **44 additional fresh bytes from every seed source** and the OS, before its 256 GiB generated-stream limit is exceeded. That limit measures generated RNG output, not input file size. Using `-pad-stream` alongside these options adds one hardware byte per pad byte, with no extra hardware bytes consumed for seeding.
 
 Keep entropy files outside the backup input and output directories. Padlock rejects the same local file/device/pipe selected twice, including file aliases, and rejects entropy inputs also present in the input or output tree, including hard links. A new invocation opens a regular file at its beginning: supply a new file or fresh contents for every encoding run. Padlock does not modify seed files or track their reuse between runs. Named-pipe producers must be connected before a read begins. Padlock waits for delayed or partial bytes within `-entropy-timeout`; receiving some bytes does not restart that timeout. An empty pipe with no producer fails rather than being retried indefinitely.
 
@@ -294,7 +296,7 @@ as the decode input. Keep collections on storage locations appropriate to your
 recovery and access requirements. Current collection containers are TAR; ZIP
 containers are not decoded directly.
 
-To supply every pad byte from your own random generator, add `-pad-stream PATH` when encoding. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
+To mix your own random generator into every pad byte, add `-pad-stream PATH` when encoding. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
 
 ### Command-Line Usage
 
@@ -315,7 +317,7 @@ To supply every pad byte from your own random generator, add `-pad-stream PATH` 
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
   - `-files`: (Optional) Creates individual files for each collection instead of TAR archives.
   - `-dryrun`: (Optional) Process the complete stream and report sizes without writing output files. Encoding counts frames before PNG/TAR overhead and reports the chunk alignment padding; these are not exact disk-space estimates.
-  - `-pad-stream PATH` reads every pad byte from a single raw device, pipe, or file. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
+  - `-pad-stream PATH` XORs one checked byte from a raw device, pipe, or file with each normal mixer byte. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
   - `-pad-skip N` discards a documented one-time header of N bytes from `-pad-stream` before checking and consuming the pad data. Defaults to zero.
   - `-entropy-file PATH`, `-entropy-url URL`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
   - `-entropy-timeout DURATION`: (Optional, encode only) Limit each external source open/read; default `10s`.
@@ -360,7 +362,7 @@ For encoding and decoding, input and output directories must be separate: neithe
     - **compress.go:** Stream compression/decompression using gzip.
     - **padding.go:** Chunk alignment padding that hides the exact compressed length.
   - **pkg/pad/pad.go:** Core implementation of the one-time pad threshold scheme.
-  - **pkg/pad/rng.go:** XORs five generators; optionally mixes external contributions into their seeds alongside OS randomness.
+  - **pkg/pad/rng.go:** XORs the five normal generators with the optional full-length pad stream. Separate external seed sources can supplement OS randomness at initialization and reseeding.
   - **pkg/trace/trace.go:** Context-based logging system for debug and trace information.
 
 ## License
@@ -372,7 +374,7 @@ For encoding and decoding, input and output directories must be separate: neithe
 October 26, 2026, by Claude (Mythos 5.1, `claude-mythos-5-1`) in Claude Code, focused on two threats: a holder of fewer than K collections recovering plaintext, and a user getting less protection than they assumed. Findings were addressed in [pull request #3](https://github.com/rayozzie/padlock/pull/3). This was a source review with mechanical checks, not a formal proof or a certified audit.
 
 - **Splitting (`pkg/pad`):** encoder and decoder were read and then checked by an independent brute-force harness for every K-of-N up to 8 (the repository's tests cover N=26). Every pad is fresh and used once, every K-subset reconstructs, and every XOR piece visible to fewer than K collections is masked by a pad they do not hold. The property is structural, was checked exhaustively, and the construction is standard replicated additive sharing.
-- **Randomness (`pkg/pad/rng*.go`):** each output is XORed with a fresh `crypto/rand` read, so the default is never weaker than the OS source; external sources feed every seed and ChaCha20 reseed, so a predictable OS source still leaves a 256-bit key; a hostile external source cannot reduce protection below the OS-only level; any source failure stops encoding before outputs are touched. These follow from XOR with an independent uniform input and were confirmed on every code path.
+- **Randomness (`pkg/pad/rng*.go`):** the October review examined the direct OS contribution to every output byte and the use of external seed material at initialization and ChaCha20 reseeding. Its XOR argument assumes a secret, uniform contribution independent of the other inputs. The full-length `-pad-stream` option was added after that review.
 - **Decode and filesystem:** pads are fresh per run, so collections from different runs reveal nothing together and are rejected; duplicates never count toward K; restore is confined to the destination with exclusive creation and sparse-entry rejection; no plaintext or collection data is written to temporary files; no file contents or entropy credentials appear in logs or errors.
 - **Published binaries:** checksums verify, embedded revisions match clean commits, and the test suite and CI matrix pass.
 
