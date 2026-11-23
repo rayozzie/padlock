@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/rayozzie/padlock/pkg/pad"
+	"github.com/rayozzie/padlock/pkg/padlock"
 )
 
 func TestPadStreamXORWithNormalMixer(t *testing.T) {
@@ -39,7 +40,7 @@ func TestPadStreamXORWithNormalMixer(t *testing.T) {
 			// Reproduce the entire local mixer, including its direct OS output.
 			// The oracle is the ordinary CLI configuration with the same OS draws.
 			cryptotest.SetGlobalRandom(t, 42)
-			rng, closeSources, err := o.prepare(context.Background(), input, outputs, false, nil)
+			rng, closeSources, err := o.prepare(context.Background(), padlock.EncodeConfig{InputDir: input, OutputDirs: outputs, N: 2, K: 2, ChunkSize: 1024}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

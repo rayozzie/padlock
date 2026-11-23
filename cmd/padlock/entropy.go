@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rayozzie/padlock/pkg/pad"
+	"github.com/rayozzie/padlock/pkg/padlock"
 )
 
 type entropyOptions struct {
@@ -48,13 +49,13 @@ func registerEntropyFlags(flags *flag.FlagSet) *entropyOptions {
 		opts.seedFiles = append(opts.seedFiles, value)
 		return nil
 	})
-	flags.DurationVar(&opts.timeout, "entropy-timeout", 10*time.Second, "time limit per external source open/read (encode only)")
+	flags.DurationVar(&opts.timeout, "entropy-timeout", 10*time.Second, "maximum pad stream idle time, source open time, and total time per seed read (encode only)")
 	return opts
 }
 
 // prepare validates the source selections and builds the encoder's mixer.
 // Dry runs validate syntax without opening files or reading stdin.
-func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []string, dryRun bool, stdin *os.File) (pad.RNG, func(), error) {
+func (o *entropyOptions) prepare(ctx context.Context, cfg padlock.EncodeConfig, stdin *os.File) (pad.RNG, func(), error) {
 	closeSources := func() {}
 	if o.timeout <= 0 {
 		return nil, closeSources, fmt.Errorf("entropy-timeout must be greater than zero")
@@ -73,7 +74,7 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		}
 		seen[path] = true
 	}
-	if dryRun || len(paths) == 0 {
+	if cfg.SizeOnly || len(paths) == 0 {
 		return pad.NewDefaultRand(ctx), closeSources, nil
 	}
 
@@ -93,8 +94,8 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		closeSources()
 		return nil, func() {}, err
 	}
-	for i, path := range paths {
-		name := fmt.Sprintf("entropy source %d (file)", i+1)
+	for _, path := range paths {
+		name := fmt.Sprintf("entropy source %d (file)", len(seedSources)+1)
 		if path == o.padStream {
 			name = "pad stream"
 		}
@@ -122,6 +123,10 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		infos = append(infos, info)
 		source := &fileEntropySource{name: name, file: f, timeout: o.timeout}
 		if path == o.padStream {
+			if isOSRandomDevice(info) {
+				return fail(fmt.Errorf("-pad-stream uses the OS random generator already in the mixer. Supply an independent device, file, or pipe"))
+			}
+			source.padStream = true
 			stream = source
 		} else {
 			seedSources = append(seedSources, source)
@@ -129,7 +134,7 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	}
 	// Checking identities also catches hard links, symlinks to files outside the
 	// archive, and differently spelled paths. Do not archive or clear seed inputs.
-	for _, root := range append([]string{input}, outputs...) {
+	for _, root := range append([]string{cfg.InputDir}, cfg.OutputDirs...) {
 		if err := checkEntropyOutsideDirectory(root, infos); err != nil {
 			return fail(err)
 		}
@@ -137,7 +142,16 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	var rng pad.RNG
 	var err error
 	if stream != nil {
-		if err := stream.startPadStream(ctx, o.padSkip); err != nil {
+		layout, layoutErr := pad.NewPadForEncode(ctx, cfg.N, cfg.K)
+		if layoutErr != nil {
+			return fail(layoutErr)
+		}
+		// Even an empty CLI archive contains a gzip header and trailer (18 bytes).
+		// Chunk alignment guarantees at least one full input chunk. Cap both
+		// factors before multiplying so even the largest chunk size is safe.
+		inputBytes := min(padWindow, max(18, layout.InputChunkBytes(cfg.ChunkSize)))
+		probeSize := min(padWindow, inputBytes*min(padWindow, layout.PadBytesPerInputByte()))
+		if err := stream.startPadStream(ctx, o.padSkip, probeSize); err != nil {
 			return fail(err)
 		}
 		rng, err = pad.NewRandWithPadStream(ctx, stream, seedSources...)
@@ -205,12 +219,13 @@ func openEntropyWithTimeout(ctx context.Context, path string, timeout time.Durat
 }
 
 type fileEntropySource struct {
-	name    string
-	file    *os.File
-	checked *padStreamReader
-	timeout time.Duration
-	mu      sync.Mutex
-	failed  error
+	name      string
+	file      *os.File
+	padStream bool
+	checked   *padStreamReader
+	timeout   time.Duration
+	mu        sync.Mutex
+	failed    error
 }
 
 func (s *fileEntropySource) Name() string { return s.name }
@@ -220,12 +235,19 @@ func (s *fileEntropySource) Read(ctx context.Context, p []byte) error {
 	if s.failed != nil {
 		return s.failed
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Keep the caller's buffer private from a read that finishes after timeout.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	timer := time.NewTimer(s.timeout)
+	defer timer.Stop()
+	var progress chan struct{}
+	if s.padStream {
+		progress = make(chan struct{})
+	}
+	// The worker owns buf until it hands it back. A timed-out OS read may
+	// finish after this method returns, so it must never see the caller's p.
 	buf := make([]byte, len(p))
 	done := make(chan error)
 	go func() {
@@ -233,28 +255,36 @@ func (s *fileEntropySource) Read(ctx context.Context, p []byte) error {
 		if s.checked != nil {
 			r = s.checked
 		}
-		err := readFullEntropyFile(ctx, r, buf)
+		err := readFullEntropyFile(ctx, r, buf, progress)
 		select {
 		case done <- err:
 		case <-ctx.Done():
 			clear(buf)
 		}
 	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			err = ctx.Err()
-		}
-		if err == nil {
-			copy(p, buf)
+	for s.failed == nil {
+		select {
+		case <-progress:
+			timer.Reset(s.timeout)
+		case err := <-done:
+			if err == nil {
+				err = ctx.Err()
+			}
+			if err == nil {
+				copy(p, buf)
+			}
 			clear(buf)
-			return nil
+			if err == nil {
+				return nil
+			}
+			s.failed = err
+		case <-ctx.Done():
+			s.failed = ctx.Err()
+		case <-timer.C:
+			s.failed = context.DeadlineExceeded
 		}
-		clear(buf)
-		s.failed = err
-	case <-ctx.Done():
-		s.failed = ctx.Err()
 	}
+	cancel()
 	// Every attempted read failure permanently disables this source. Closing
 	// interrupts pollable reads and releases the handle even if the retry loop
 	// reports cancellation before this goroutine selects ctx.Done(). A worker
@@ -267,20 +297,43 @@ func (s *fileEntropySource) Read(ctx context.Context, p []byte) error {
 // readFullEntropyFile preserves partial progress when a nonblocking file cannot
 // supply more bytes yet. Darwin's named FIFOs do not use Go's runtime poller, so
 // their EAGAIN/EWOULDBLOCK needs an explicit, cancellable wait. The context is
-// shared across every retry; progress never renews the per-read timeout.
-func readFullEntropyFile(ctx context.Context, reader io.Reader, buf []byte) error {
+// shared across retries. Only a positive read from a pad stream renews its timer.
+func readFullEntropyFile(ctx context.Context, reader io.Reader, buf []byte, progress chan<- struct{}) error {
 	total := 0
-	for {
+	for total < len(buf) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		n, err := io.ReadFull(reader, buf[total:])
+		// Bound the health-check work between progress notifications.
+		part := buf[total:]
+		n, err := reader.Read(part[:min(len(part), 32*1024)])
 		total += n
-		if !entropyReadWouldBlock(err) {
-			if err == io.EOF && total > 0 {
+		if err != nil && !entropyReadWouldBlock(err) {
+			if err != io.EOF {
+				return err
+			}
+			if total == len(buf) {
+				return nil
+			}
+			if total > 0 {
 				return io.ErrUnexpectedEOF
 			}
 			return err
+		}
+		if total == len(buf) {
+			return nil
+		}
+		if n > 0 {
+			if progress != nil {
+				select {
+				case progress <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			if err == nil {
+				continue
+			}
 		}
 		timer := time.NewTimer(5 * time.Millisecond)
 		select {
@@ -290,4 +343,5 @@ func readFullEntropyFile(ctx context.Context, reader io.Reader, buf []byte) erro
 		case <-timer.C:
 		}
 	}
+	return nil
 }

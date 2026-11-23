@@ -11,3 +11,5 @@ func openEntropyFile(path string) (*os.File, error) {
 }
 
 func entropyReadWouldBlock(error) bool { return false }
+
+func isOSRandomDevice(os.FileInfo) bool { return false }

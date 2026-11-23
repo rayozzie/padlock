@@ -123,7 +123,7 @@ The statistical generators remain in the mixture for algorithm diversity. Seedin
 
 Use `-pad-stream PATH` to mix a local hardware random generator, pipe, or single-use binary file into every pad byte. Padlock first checks the incoming stream, then computes **pad byte = checked stream byte XOR normal mixer byte**. The normal mixer includes the direct OS random source and all four seeded software generators.
 
-If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. If part of the hardware stream is predictable, those positions retain the protection of an independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any seed material supplied through `-entropy-file`.
+If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. Where hardware bytes are predictable, secrecy depends on the OS generator and ChaCha20 in the independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any seed material supplied through `-entropy-file`.
 
 First, check how many bytes your backup needs. This command reads the input directory and leaves the random source untouched.
 
@@ -146,7 +146,7 @@ For a generator with a vendor utility, pipe its **raw binary output** into the e
 | 2 of 3 | 3 GiB |
 | 3 of 5 | 20 GiB |
 
-Choose a device mode that extracts randomness continuously from physical measurements. Padlock cannot verify the origin or secrecy of those bytes. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. Anyone who retains the stream knows its contribution to the XOR.
+Choose a device mode that extracts randomness continuously from physical measurements. On Unix, Padlock rejects the OS random devices `/dev/random` and `/dev/urandom` as pad streams, including symlinks or stdin redirected from them. A pipe, file, or virtual device can still share the OS generator’s origin. Verify the source of your bytes. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. Anyone who retains the stream knows its contribution to the XOR.
 
 **Headers.** A predictable header contributes no secret hardware randomness at those positions. Use the device's documented raw binary output. If its format has **one fixed header** followed by random bytes, discard exactly the documented length. For example, for a 64-byte header:
 
@@ -156,17 +156,18 @@ padlock encode ./input ./collections -pad-stream ./fresh-device-output.bin -pad-
 
 Supply 64 extra bytes beyond **Pad stream required** in this example. The skip happens once per encode, including for stdin. A documented upper bound also works if everything after the header is random: skipping a few extra random bytes is safe. Padlock checks the start of the remaining payload for common signatures, including PNG, ZIP, gzip, PDF and HTTP/1, before preparing the output directory. It cannot infer an unknown header length or recognize an arbitrary public string. For a header of unknown maximum length, repeated packet framing, or text encodings such as JSON or hex, use the device's parser to extract the binary payload.
 
-**Rolling health checks** run automatically on the usable pad bytes, across reads and backup chunks. Encoding stops on any of these conditions:
+Before creating or clearing output, Padlock health-checks up to 512 usable bytes. With a small chunk size it can check fewer, bounded by the pad bytes the backup is guaranteed to need. Those bytes count toward the dry-run total and enter the mixer exactly once. **Rolling health checks** then continue across reads and backup chunks. Encoding stops on any of these conditions:
 
 | Failure | Cutoff |
 |---|---|
 | Repetition | 13 consecutive copies of the same byte |
 | Byte concentration | Any byte occurs at least 36 times within the most recent 512 bytes, including the initial partial window |
 | Bit imbalance | A full 512-byte window contains 1,680 or fewer one bits, or 2,416 or more, out of 4,096 |
+| Individual bit position | In a full 512-byte window, any of the eight bit positions is one in 120 or fewer bytes, or in 392 or more |
 
-Padlock checks the actual bytes before writing the affected chunk. An error identifies the failed test without printing pad bytes. Discard partial collections and investigate the source before retrying with fresh material. For 1 TiB of independent, uniformly random bytes, the chance of a false alarm from the three rolling tests is below 2 in 10¹⁷. The separate header check can also reject a chance signature match. A predictable or replayed stream can pass, and a successful run tells an observer that the rejected patterns were absent. These application-level checks supplement the generator's own noise-source health tests. [NIST SP 800-90B, section 4](https://doi.org/10.6028/NIST.SP.800-90B)
+Padlock checks the actual bytes before writing the affected chunk. An error identifies the failed test without printing pad bytes. Discard partial collections and investigate the source before retrying with fresh material. For 1 TiB of independent, uniformly random bytes, the chance of a false alarm from the four rolling tests is below 2 in 10¹⁷. The separate header check can also reject a chance signature match. Base64 or ASCII text has a fixed high bit that fails the individual-position check by the first full window. A predictable or replayed binary stream can pass, and a successful run tells an observer that the rejected patterns were absent. These application-level checks supplement the generator's own noise-source health tests. [NIST SP 800-90B, section 4](https://doi.org/10.6028/NIST.SP.800-90B)
 
-If the device stalls, runs out, or reports an error, encoding stops. Use `-entropy-timeout 60s` if a slow device needs longer than the default 10 seconds for a read. An interrupted encode can leave a partial backup, so use a fresh output directory. The seed options below apply only to the software generator.
+If the device stalls, runs out, or reports an error, encoding stops. The default pad timeout is 10 seconds **without new bytes**, including while skipping a header. A slow device can take longer than that to fill a chunk as long as bytes keep arriving. Use `-entropy-timeout 60s` for a device that pauses longer between deliveries. After startup checks pass, `-clear` can replace existing output and a later failure can leave partial collections. Use a fresh output directory to preserve a previous backup. The seed options below apply only to the software generator.
 
 ### Optional External Entropy
 
@@ -179,12 +180,12 @@ padlock encode ./input ./collections -copies 3 -required 2 \
 ```
 
 - `-entropy-file PATH` reads raw bytes from a file, device, or named pipe. Use `-entropy-file -` to read a producer's raw bytes from stdin. Repeat the option to add another source. Padlock reads each source sequentially.
-- `-entropy-timeout DURATION` limits each source open/read (default `10s`). A selected source's timeout, short read, exhaustion, or reported error stops encoding. Initial seeding completes before output directories can be cleared.
+- `-entropy-timeout DURATION` limits the total time for each source open and each seed read (default `10s`). A selected source's timeout, short read, exhaustion, or reported error stops encoding. Initial seeding completes before output directories can be cleared.
 - Dry runs check option syntax without reading any supplied source. Decoding requires only the collections.
 
 At initialization, **each external seed source supplies 76 bytes**. Padlock XORs those bytes with 76 fresh OS bytes and contributions from every other selected seed source, then assigns separate ranges to MathRand (8), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct `CryptoRand` output provider remains active. Each later ChaCha20 reseed requires **44 additional fresh bytes from every seed source** and the OS, before its 256 GiB generated-stream limit is exceeded. That limit measures generated RNG output, not input file size. Using `-pad-stream` alongside these options adds one hardware byte per pad byte, with no extra hardware bytes consumed for seeding.
 
-Keep entropy files outside the backup input and output directories. Padlock rejects the same local file/device/pipe selected twice, including file aliases, and rejects entropy inputs also present in the input or output tree, including hard links. A new invocation opens a regular file at its beginning: supply a new file or fresh contents for every encoding run. Padlock does not modify seed files or track their reuse between runs. Named-pipe producers must be connected before a read begins. Padlock waits for delayed or partial bytes within `-entropy-timeout`; receiving some bytes does not restart that timeout. An empty pipe with no producer fails rather than being retried indefinitely.
+Keep entropy files outside the backup input and output directories. Padlock rejects the same local file/device/pipe selected twice, including file aliases, and rejects entropy inputs also present in the input or output tree, including hard links. A new invocation opens a regular file at its beginning: supply a new file or fresh contents for every encoding run. Padlock does not modify seed files or track their reuse between runs. Named-pipe producers must be connected before a read begins. Each seed read must finish within `-entropy-timeout`, including time spent waiting between partial deliveries. An empty pipe with no producer fails rather than being retried indefinitely.
 
 #### What the Additional Sources Establish
 
@@ -312,7 +313,7 @@ To mix your own random generator into every pad byte, add `-pad-stream PATH` whe
   - `-pad-stream PATH` XORs one checked byte from a raw device, pipe, or file with each normal mixer byte. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
   - `-pad-skip N` discards a documented one-time header of N bytes from `-pad-stream` before checking and consuming the pad data. Defaults to zero.
   - `-entropy-file PATH`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
-  - `-entropy-timeout DURATION`: (Optional, encode only) Limit each external source open/read; default `10s`.
+  - `-entropy-timeout DURATION`: (Optional, encode only) Set the maximum idle time for pad bytes and the total time per source open or seed read (default `10s`).
 
 - **Decode:**
 

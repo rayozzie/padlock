@@ -38,7 +38,7 @@ The default setup therefore relies on the OS RNG and generator implementations. 
 
 ### Optional Source Diversity
 
-`-pad-stream` contributes one checked byte per output byte, XORed with all five normal generators. Stream health checks operate on the hardware contribution before mixing. A predictable hardware contribution leaves those positions dependent on the local mixer. [Hardware stream assumptions and failure handling](../../README.md#using-a-hardware-random-stream-for-every-pad-byte)
+`-pad-stream` contributes one checked byte per output byte, XORed with all five normal generators. Stream health checks operate on the hardware contribution before mixing. Padlock checks each bit position for extreme bias over a rolling 512-byte window. A predictable hardware contribution leaves those positions dependent on the OS generator and ChaCha20. Unix OS random devices are rejected as stream inputs. The operator must verify the origin of other devices, files, and pipes. [Hardware stream assumptions and failure handling](../../README.md#using-a-hardware-random-stream-for-every-pad-byte)
 
 The repeatable `-entropy-file` option supplements the OS seed with raw bytes from local files, devices, named pipes, or stdin (`-`). Padlock has no built-in network entropy source. See the [README source contract](../../README.md#optional-external-entropy) and [Usage Guide](Usage-Guide) for examples.
 

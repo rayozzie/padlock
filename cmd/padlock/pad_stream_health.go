@@ -14,7 +14,7 @@ import (
 )
 
 // startPadStream runs after path validation and before any output is prepared.
-func (s *fileEntropySource) startPadStream(ctx context.Context, skip int64) error {
+func (s *fileEntropySource) startPadStream(ctx context.Context, skip int64, probeSize int) error {
 	if skip > 0 {
 		discard := make([]byte, min(skip, 32*1024))
 		defer clear(discard)
@@ -27,17 +27,27 @@ func (s *fileEntropySource) startPadStream(ctx context.Context, skip int64) erro
 		}
 	}
 
-	// Even an empty gzip archive requires more than eight pad bytes. Replay
-	// all eight through the health tests so probing costs no extra pad bytes.
-	var prefix [8]byte
-	if err := s.Read(ctx, prefix[:]); err != nil {
+	// Check signatures immediately, even if the producer sends only a header.
+	probe := make([]byte, probeSize)
+	prefix := probe[:8]
+	if err := s.Read(ctx, prefix); err != nil {
 		return fmt.Errorf("reading start of pad stream: %w", err)
 	}
-	if hasPadFileHeader(prefix[:]) {
-		clear(prefix[:])
+	if hasPadFileHeader(prefix) {
+		clear(probe)
 		return errors.New("pad stream starts with a recognized file or protocol header; supply the generator's raw binary payload")
 	}
-	s.checked = &padStreamReader{source: io.MultiReader(bytes.NewReader(prefix[:]), s.file)}
+	r := &padStreamReader{source: s.file}
+	s.checked = r
+	if err := r.health.check(prefix); err != nil {
+		clear(probe)
+		return err
+	}
+	if err := s.Read(ctx, probe[len(prefix):]); err != nil {
+		clear(probe)
+		return fmt.Errorf("checking start of pad stream: %w", err)
+	}
+	r.replay = probe
 	return nil
 }
 
@@ -59,9 +69,19 @@ type padStreamReader struct {
 	mu     sync.Mutex // protects the rolling pad bytes during timeout cleanup
 	closed bool
 	health padStreamHealth
+	replay []byte // Prechecked bytes, already counted in health.
 }
 
 func (r *padStreamReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	if len(r.replay) > 0 {
+		n := copy(p, r.replay)
+		clear(r.replay[:n])
+		r.replay = r.replay[n:]
+		r.mu.Unlock()
+		return n, nil
+	}
+	r.mu.Unlock()
 	n, err := r.source.Read(p)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -69,7 +89,7 @@ func (r *padStreamReader) Read(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 	if failure := r.health.check(p[:n]); failure != nil {
-		// io.ReadFull would suppress the error if we returned a full count.
+		// No bytes from this read may be used after a health failure.
 		return 0, failure
 	}
 	return n, err
@@ -80,28 +100,33 @@ func (r *padStreamReader) clear() {
 	defer r.mu.Unlock()
 	r.closed = true
 	r.health = padStreamHealth{}
+	clear(r.replay)
+	r.replay = nil
 }
 
 // Cutoffs assume independent uniform pad bytes. Per byte position, a run of
 // 13 has probability 2^-96. For a window, bound frequency failures by 256
 // binomial(512, 1/256) upper tails and bit imbalance by the two tails of
-// binomial(4096, 1/2). Summing across 2^40 positions bounds rolling false
+// binomial(4096, 1/2). The eight bit positions add 16 binomial(512, 1/2)
+// lower tails at 120. Summing across 2^40 positions bounds rolling false
 // alarms below 2e-17 per TiB, without assuming independent windows.
 const (
 	padWindow       = 512
 	runCutoff       = 13
 	frequencyCutoff = 36
 	bitTailCutoff   = 1680
+	positionCutoff  = 120
 )
 
 type padStreamHealth struct {
-	window [padWindow]byte
-	counts [256]uint16
-	next   int
-	size   int
-	ones   int
-	last   byte
-	run    int
+	window       [padWindow]byte
+	counts       [256]uint16
+	next         int
+	size         int
+	ones         int
+	positionOnes [8]int
+	last         byte
+	run          int
 }
 
 func (h *padStreamHealth) check(p []byte) error {
@@ -115,8 +140,9 @@ func (h *padStreamHealth) check(p []byte) error {
 			return errors.New("pad stream health check failed: repeated byte run")
 		}
 
+		var old byte
 		if h.size == padWindow {
-			old := h.window[h.next]
+			old = h.window[h.next]
 			h.counts[old]--
 			h.ones -= bits.OnesCount8(old)
 		} else {
@@ -131,6 +157,13 @@ func (h *padStreamHealth) check(p []byte) error {
 		}
 		if h.size == padWindow && (h.ones <= bitTailCutoff || h.ones >= padWindow*8-bitTailCutoff) {
 			return errors.New("pad stream health check failed: bit imbalance")
+		}
+		for bit := range h.positionOnes {
+			h.positionOnes[bit] += int((b>>bit)&1) - int((old>>bit)&1)
+			count := h.positionOnes[bit]
+			if h.size == padWindow && (count <= positionCutoff || count >= padWindow-positionCutoff) {
+				return errors.New("pad stream health check failed: individual bit position imbalance")
+			}
 		}
 	}
 	return nil

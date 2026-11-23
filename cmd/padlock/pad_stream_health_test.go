@@ -128,3 +128,25 @@ func TestPadStreamHealthAbortsBeforeAffectedChunk(t *testing.T) {
 		t.Fatalf("failing chunk was written: %v", err)
 	}
 }
+
+func TestPadStreamBitPositionCutoffsAcrossReads(t *testing.T) {
+	for _, mask := range []byte{0, 0xff} {
+		var h padStreamHealth
+		window := make([]byte, padWindow)
+		for i := range window {
+			b := byte(i % 128)
+			if i <= positionCutoff {
+				b |= 0x80
+			}
+			window[i] = b ^ mask
+		}
+		// Start one count inside the acceptance boundary (121 or 391).
+		if err := h.check(window); err != nil {
+			t.Fatal(err)
+		}
+		// Evict the first sample and cross the boundary (120 or 392).
+		if err := h.check([]byte{mask}); err == nil || !strings.Contains(err.Error(), "bit position") {
+			t.Fatalf("mask %02x: wanted a bit-position error, got %v", mask, err)
+		}
+	}
+}

@@ -52,13 +52,15 @@ Options:
   -pad-stream PATH  XOR one byte from a raw device, pipe, or file with each normal mixer byte
                     Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
                     Supply fresh, private bytes on every encode. A short read stops the backup
-                    Recognized headers and failed rolling health checks stop encoding
+                    Up to 512 bytes are checked before clearing output. Checks continue while encoding
+                    Supply raw binary. Unix /dev/random and /dev/urandom are rejected
                     Encode only. Optional -entropy-file inputs seed the normal mixer
   -pad-skip N       Discard N documented header bytes once, before the pad data (default: 0)
                     Supply these extra bytes in addition to the dry-run pad count
   -entropy-file PATH  Additional seed bytes from a local file, device, or pipe; '-' reads stdin
                     Repeatable; encode only. Keep outside input/output directories; never reuse bytes
-  -entropy-timeout DURATION  Time limit per external source open/read (default: 10s)
+  -entropy-timeout DURATION  Maximum pad stream idle time (default: 10s)
+                    Also limits each source open and each complete seed read
                     Dry runs do not read external sources. Decode does not need them
 
 Full-stream example:
@@ -278,7 +280,7 @@ func handleEncode() {
 	}
 
 	// Open selected sources and initialize software seeds before preparing outputs.
-	rng, closeEntropy, err := entropy.prepare(ctx, inputDir, outputDirs, cfg.SizeOnly, os.Stdin)
+	rng, closeEntropy, err := entropy.prepare(ctx, cfg, os.Stdin)
 	if err != nil {
 		log.Fatalf("entropy setup failed: %v", err)
 	}
