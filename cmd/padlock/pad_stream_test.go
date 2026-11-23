@@ -33,7 +33,7 @@ func TestPadStreamXORWithNormalMixer(t *testing.T) {
 	if err := os.WriteFile(seed, bytes.Repeat([]byte{0xa5}, pad.InitialEntropyBytes), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, specs := range [][]entropySpec{nil, {{"file", seed}}} {
+	for _, seedFiles := range [][]string{nil, {seed}} {
 		read := func(o entropyOptions) []byte {
 			t.Helper()
 			// Reproduce the entire local mixer, including its direct OS output.
@@ -52,13 +52,13 @@ func TestPadStreamXORWithNormalMixer(t *testing.T) {
 			}
 			return got
 		}
-		o := entropyOptions{specs: specs, timeout: time.Second}
+		o := entropyOptions{seedFiles: seedFiles, timeout: time.Second}
 		local := read(o)
 		o.padStream, o.padSkip = path, 6
 		mixed := read(o)
 		for i, b := range stream {
 			if mixed[i] != local[i]^b {
-				t.Fatalf("wrong XOR at byte %d with %d seed sources", i, len(specs))
+				t.Fatalf("wrong XOR at byte %d with %d seed sources", i, len(seedFiles))
 			}
 		}
 	}
@@ -106,6 +106,11 @@ func TestPadStreamCLI(t *testing.T) {
 			if tc.stdin {
 				source = "-"
 				stdin = bytes.NewReader(deviceOutput)
+				seed := filepath.Join(t.TempDir(), "seed")
+				if err := os.WriteFile(seed, bytes.Repeat([]byte{0xa5}, pad.InitialEntropyBytes), 0600); err != nil {
+					t.Fatal(err)
+				}
+				options = append(options, "-entropy-file", seed)
 			} else if err := os.WriteFile(path, deviceOutput, 0600); err != nil {
 				t.Fatal(err)
 			}

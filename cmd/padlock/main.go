@@ -53,12 +53,11 @@ Options:
                     Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
                     Supply fresh, private bytes on every encode. A short read stops the backup
                     Recognized headers and failed rolling health checks stop encoding
-                    Encode only. Optional -entropy-file/-entropy-url inputs seed the normal mixer
+                    Encode only. Optional -entropy-file inputs seed the normal mixer
   -pad-skip N       Discard N documented header bytes once, before the pad data (default: 0)
                     Supply these extra bytes in addition to the dry-run pad count
-  -entropy-file PATH  Additional seed bytes from a file, device, or pipe; '-' reads stdin
+  -entropy-file PATH  Additional seed bytes from a local file, device, or pipe; '-' reads stdin
                     Repeatable; encode only. Keep outside input/output directories; never reuse bytes
-  -entropy-url URL  Additional seed bytes from HTTPS application/octet-stream (repeatable; encode only)
   -entropy-timeout DURATION  Time limit per external source open/read (default: 10s)
                     Dry runs do not read external sources. Decode does not need them
 
@@ -288,7 +287,7 @@ func handleEncode() {
 	if entropy.padStream != "" && !cfg.SizeOnly {
 		tracer.Infof("XORing one checked stream byte with the normal mixer for every pad byte")
 	}
-	if cfg.SizeOnly && (len(entropy.specs) > 0 || entropy.padStream != "") {
+	if cfg.SizeOnly && (len(entropy.seedFiles) > 0 || entropy.padStream != "") {
 		tracer.Infof("Dry run: external entropy sources are not opened or consumed")
 		if entropy.padSkip > 0 {
 			tracer.Infof("Add %d header bytes to the pad stream required in the size report", entropy.padSkip)

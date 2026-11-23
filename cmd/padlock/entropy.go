@@ -4,30 +4,21 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
-	"mime"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/rayozzie/padlock/pkg/pad"
 )
 
-type entropySpec struct {
-	kind, value string
-}
-
 type entropyOptions struct {
-	specs     []entropySpec
+	seedFiles []string
 	padStream string
 	padSkip   int64
 	timeout   time.Duration
@@ -54,40 +45,15 @@ func registerEntropyFlags(flags *flag.FlagSet) *entropyOptions {
 		if value == "" {
 			return fmt.Errorf("entropy path must not be empty")
 		}
-		opts.specs = append(opts.specs, entropySpec{"file", value})
-		return nil
-	})
-	flags.Func("entropy-url", "additional seed bytes from a fresh HTTPS application/octet-stream response (repeatable, encode only)", func(value string) error {
-		opts.specs = append(opts.specs, entropySpec{"https", value})
+		opts.seedFiles = append(opts.seedFiles, value)
 		return nil
 	})
 	flags.DurationVar(&opts.timeout, "entropy-timeout", 10*time.Second, "time limit per external source open/read (encode only)")
 	return opts
 }
 
-// URL errors deliberately omit the URL: its query may contain an API token.
-func entropyURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Opaque != "" || u.User != nil || u.Fragment != "" {
-		return nil, fmt.Errorf("entropy URL must be HTTPS with a host and no userinfo or fragment")
-	}
-	return u, nil
-}
-
-func newEntropyHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DisableCompression = true
-	transport.DisableKeepAlives = true
-	transport.MaxResponseHeaderBytes = 64 * 1024
-	return &http.Client{
-		Transport: transport,
-		// Do not redirect to a different provider or downgrade to HTTP.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-}
-
 // prepare validates the source selections and builds the encoder's mixer.
-// Dry runs validate syntax without opening files, reading stdin, or contacting URLs.
+// Dry runs validate syntax without opening files or reading stdin.
 func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []string, dryRun bool, stdin *os.File) (pad.RNG, func(), error) {
 	closeSources := func() {}
 	if o.timeout <= 0 {
@@ -96,27 +62,18 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	if o.padSkip != 0 && o.padStream == "" {
 		return nil, closeSources, fmt.Errorf("-pad-skip requires -pad-stream")
 	}
-	specs := o.specs
+	paths := o.seedFiles
 	if o.padStream != "" {
-		specs = append([]entropySpec{{"pad stream", o.padStream}}, specs...)
+		paths = append([]string{o.padStream}, paths...)
 	}
 	seen := make(map[string]bool)
-	for i, spec := range specs {
-		key := "file:" + spec.value
-		if spec.kind == "https" {
-			u, err := entropyURL(spec.value)
-			if err != nil {
-				return nil, closeSources, fmt.Errorf("entropy source %d: %w", i+1, err)
-			}
-			u.Host = strings.ToLower(u.Host)
-			key = u.String()
-		}
-		if seen[key] {
+	for i, path := range paths {
+		if seen[path] {
 			return nil, closeSources, fmt.Errorf("entropy source %d duplicates an earlier source", i+1)
 		}
-		seen[key] = true
+		seen[path] = true
 	}
-	if dryRun || len(specs) == 0 {
+	if dryRun || len(paths) == 0 {
 		return pad.NewDefaultRand(ctx), closeSources, nil
 	}
 
@@ -124,7 +81,6 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	var files []*os.File
 	var infos []os.FileInfo
 	var stream *fileEntropySource
-	client := newEntropyHTTPClient()
 	closeSources = func() {
 		for _, f := range files {
 			f.Close()
@@ -132,22 +88,20 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		if stream != nil && stream.checked != nil {
 			stream.checked.clear()
 		}
-		client.CloseIdleConnections()
 	}
 	fail := func(err error) (pad.RNG, func(), error) {
 		closeSources()
 		return nil, func() {}, err
 	}
-	for i, spec := range specs {
-		name := fmt.Sprintf("entropy source %d (%s)", i+1, spec.kind)
-		if spec.kind == "https" {
-			seedSources = append(seedSources, &httpEntropySource{name: name, address: spec.value, timeout: o.timeout, client: client})
-			continue
+	for i, path := range paths {
+		name := fmt.Sprintf("entropy source %d (file)", i+1)
+		if path == o.padStream {
+			name = "pad stream"
 		}
 		f := stdin
-		if spec.value != "-" {
+		if path != "-" {
 			var err error
-			f, err = openEntropyWithTimeout(ctx, spec.value, o.timeout)
+			f, err = openEntropyWithTimeout(ctx, path, o.timeout)
 			if err != nil {
 				return fail(fmt.Errorf("open %s: %w", name, err))
 			}
@@ -167,7 +121,7 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		}
 		infos = append(infos, info)
 		source := &fileEntropySource{name: name, file: f, timeout: o.timeout}
-		if spec.kind == "pad stream" {
+		if path == o.padStream {
 			stream = source
 		} else {
 			seedSources = append(seedSources, source)
@@ -175,11 +129,9 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	}
 	// Checking identities also catches hard links, symlinks to files outside the
 	// archive, and differently spelled paths. Do not archive or clear seed inputs.
-	if len(infos) > 0 {
-		for _, root := range append([]string{input}, outputs...) {
-			if err := checkEntropyOutsideDirectory(root, infos); err != nil {
-				return fail(err)
-			}
+	for _, root := range append([]string{input}, outputs...) {
+		if err := checkEntropyOutsideDirectory(root, infos); err != nil {
+			return fail(err)
 		}
 	}
 	var rng pad.RNG
@@ -338,61 +290,4 @@ func readFullEntropyFile(ctx context.Context, reader io.Reader, buf []byte) erro
 		case <-timer.C:
 		}
 	}
-}
-
-type httpEntropySource struct {
-	name, address string
-	timeout       time.Duration
-	client        *http.Client
-}
-
-func (s *httpEntropySource) Name() string { return s.name }
-func (s *httpEntropySource) Read(ctx context.Context, p []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.address, nil)
-	if err != nil {
-		return fmt.Errorf("cannot construct HTTPS entropy request")
-	}
-	req.Header.Set("Accept", "application/octet-stream")
-	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Cache-Control", "no-store, no-cache")
-	req.Header.Set("Pragma", "no-cache")
-	req.Header.Set("X-Padlock-Entropy-Bytes", strconv.Itoa(len(p)))
-	resp, err := s.client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// url.Error includes the complete URL, including query credentials.
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			err = urlErr.Err
-		}
-		return fmt.Errorf("HTTPS entropy request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTPS entropy source returned status %d (redirects are not followed)", resp.StatusCode)
-	}
-	kind, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if err != nil || kind != "application/octet-stream" {
-		return fmt.Errorf("HTTPS entropy source must return application/octet-stream raw bytes")
-	}
-	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
-		return fmt.Errorf("HTTPS entropy source must return uncompressed bytes")
-	}
-	if age := resp.Header.Get("Age"); age != "" && age != "0" {
-		return fmt.Errorf("HTTPS entropy source returned a cached response")
-	}
-	buf := make([]byte, len(p))
-	defer clear(buf)
-	if _, err := io.ReadFull(resp.Body, buf); err != nil {
-		return fmt.Errorf("read HTTPS entropy bytes: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	copy(p, buf)
-	return nil
 }

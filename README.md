@@ -121,9 +121,9 @@ The statistical generators remain in the mixture for algorithm diversity. Seedin
 
 ### Using a hardware random stream for every pad byte
 
-Use `-pad-stream PATH` to mix a local hardware random generator, pipe, or single-use binary file into every pad byte. Padlock first checks the incoming stream, then computes **pad byte = checked stream byte XOR normal mixer byte**. The normal mixer includes the direct OS random source and all four seeded software generators. The public backup identifier uses a separate OS draw.
+Use `-pad-stream PATH` to mix a local hardware random generator, pipe, or single-use binary file into every pad byte. Padlock first checks the incoming stream, then computes **pad byte = checked stream byte XOR normal mixer byte**. The normal mixer includes the direct OS random source and all four seeded software generators.
 
-If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. If part of the hardware stream is predictable, those positions retain the protection of an independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any inputs supplied through `-entropy-file` or `-entropy-url`. Those optional inputs only supplement software seeds.
+If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. If part of the hardware stream is predictable, those positions retain the protection of an independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any seed material supplied through `-entropy-file`.
 
 First, check how many bytes your backup needs. This command reads the input directory and leaves the random source untouched.
 
@@ -170,35 +170,27 @@ If the device stalls, runs out, or reports an error, encoding stops. Use `-entro
 
 ### Optional External Entropy
 
-Encoding can supplement the OS source with one or more sources of your choosing:
+Padlock has no built-in network entropy source. To supplement the OS seed, supply fresh, private bytes from a local source.
 
 ```bash
 padlock encode ./input ./collections -copies 3 -required 2 \
   -entropy-file /media/rng/fresh-seed.bin \
-  -entropy-url 'https://your-entropy-service.example/raw' \
   -entropy-timeout 10s
 ```
 
-- `-entropy-file PATH` reads raw bytes from a file, device, or named pipe. Use `-entropy-file -` to read a producer's raw bytes from stdin. The file is read sequentially and is never rewound or cycled within the operation.
-- `-entropy-url URL` fetches fresh raw bytes over HTTPS with normal certificate validation. Both source options are repeatable. They are disabled by default; ordinary operation makes no network requests.
+- `-entropy-file PATH` reads raw bytes from a file, device, or named pipe. Use `-entropy-file -` to read a producer's raw bytes from stdin. Repeat the option to add another source. Padlock reads each source sequentially.
 - `-entropy-timeout DURATION` limits each source open/read (default `10s`). A selected source's timeout, short read, exhaustion, or reported error stops encoding. Initial seeding completes before output directories can be cleared.
-- Dry runs validate option syntax without opening files, consuming stdin, or contacting services. They do not verify source availability. Decoding requires only the collections and never contacts these external sources.
+- Dry runs check option syntax without reading any supplied source. Decoding requires only the collections.
 
 At initialization, **each external seed source supplies 76 bytes**. Padlock XORs those bytes with 76 fresh OS bytes and contributions from every other selected seed source, then assigns separate ranges to MathRand (8), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct `CryptoRand` output provider remains active. Each later ChaCha20 reseed requires **44 additional fresh bytes from every seed source** and the OS, before its 256 GiB generated-stream limit is exceeded. That limit measures generated RNG output, not input file size. Using `-pad-stream` alongside these options adds one hardware byte per pad byte, with no extra hardware bytes consumed for seeding.
 
 Keep entropy files outside the backup input and output directories. Padlock rejects the same local file/device/pipe selected twice, including file aliases, and rejects entropy inputs also present in the input or output tree, including hard links. A new invocation opens a regular file at its beginning: supply a new file or fresh contents for every encoding run. Padlock does not modify seed files or track their reuse between runs. Named-pipe producers must be connected before a read begins. Padlock waits for delayed or partial bytes within `-entropy-timeout`; receiving some bytes does not restart that timeout. An empty pipe with no producer fails rather than being retried indefinitely.
 
-#### HTTPS Source Contract
-
-The URL must return a new `200 OK` response with `Content-Type: application/octet-stream` and at least the requested number of **raw bytes**, not JSON, hexadecimal text, or HTML. Each request is a GET with an `X-Padlock-Entropy-Bytes` header (`76` initially, `44` on reseeding). Extra response bytes are discarded when the response is closed. The client requests no caching, rejects responses marked with a nonzero `Age`, and refuses redirects and content encoding. URLs with userinfo or fragments are rejected. Use a file or pipe adapter for providers that use a different API format.
-
-Requests do not contain local seeds, backup data, or other sources' contributions. Response bytes and URL query credentials are not logged or stored in collections. HTTPS uses TLS for transport; the XOR splitting and backup format are unchanged.
-
 #### What the Additional Sources Establish
 
-This option lets the operator add separately obtained seed material. When a contribution is uniform, secret from the attacker, and independent of the other contributions, XOR preserves that property in the combined seed. Choose sources with separate origins and trust dependencies; multiple paths to the same device or services backed by the same generator do not establish independence.
+This option lets the operator add separately obtained seed material. When a contribution is uniform, secret from the attacker, and independent of the other contributions, XOR preserves that property in the combined seed. Choose sources with separate origins. Two paths to the same generator can deliver correlated bytes.
 
-A remote provider knows its contribution. Public beacons provide public values and cannot substitute for secret entropy if the other sources become predictable. HTTPS confidentiality also depends on TLS and the local host; Go's TLS implementation uses OS randomness, so HTTPS alone does not guarantee protection against a compromised local RNG. An independently supplied physical source can avoid that particular transport dependency. All sources still pass through the encoding host.
+A local file or pipe can still contain public or previously recorded bytes. To contribute private physical randomness to every pad byte, use fresh device output with `-pad-stream`. Anyone who supplied or retained those bytes knows their contribution.
 
 Additional seed sources improve diversity when chosen appropriately. They do not make MathRand, PCG64, or MT19937 secure generators, or turn finite seeds expanded by software into information-theoretic one-time pads. Padlock reports the number of additional sources used; it does not certify their independence, secrecy, or quality.
 
@@ -236,10 +228,10 @@ A holder of fewer than K collections can see the threshold parameters, the publi
 ### Operational Boundaries
 
 - Protect the host and its random generator during encoding, and keep fewer than K collections available to an attacker.
-- The encoding host keeps the plaintext. Padlock reads the input directory and leaves it in place; filesystem snapshots (Time Machine, APFS, Volume Shadow Copy), swap and hibernation files, search indexes, and terminal scrollback (encoding lists every file name at normal logging level) can retain copies after the input is deleted, and shell history retains the command line, including any `-entropy-url` query token. Encode on a host whose storage is encrypted or that you can wipe, and treat the source directory as sensitive until it has been deliberately removed.
+- The encoding host keeps the plaintext. Padlock reads the input directory and leaves it in place; filesystem snapshots (Time Machine, APFS, Volume Shadow Copy), swap and hibernation files, search indexes, and terminal scrollback (encoding lists every file name at normal logging level) can retain copies after the input is deleted, and shell history retains the command line, including input and output paths. Encode on a host whose storage is encrypted or that you can wipe, and treat the source directory as sensitive until it has been deliberately removed.
 - Symbolic links inside the input are skipped, not followed. Encoding reports each one and ends with a warning giving the count; check it before relying on the backup, because the link targets are not in it.
 - Never reuse pad bytes for different data or restart generators from previously used state. The implementation requests fresh output for each pad but cannot certify its uniqueness or unpredictability.
-- Each new backup has a public identifier repeated in every chunk. Decode rejects different identifiers across any supplied collections, including extra collections beyond the required threshold. The first headers are checked before creating or clearing the destination; subsequent chunks are checked during decoding. Dry runs apply the same checks.
+- Each encode labels every chunk with the same public 128-bit backup ID. The ID is a noncryptographic FNV-1a checksum of clock time, elapsed time, process ID, and a per-process counter. It consumes no pad bytes or other randomness. Anyone can copy the label, and processes with identical inputs can repeat it. Decode rejects different identifiers across any supplied collections, including extra collections beyond the required threshold. The first headers are checked before creating or clearing the destination; subsequent chunks are checked during decoding. Dry runs apply the same checks.
 - Restore requires K distinct collection letters. Additional copies of a collection are accepted only when their metadata and encoded payloads agree, checked chunk by chunk across every supplied copy. Conflicting, incomplete, or unreadable copies cause failure even when other collections meet the threshold. Duplicate first-chunk payloads are compared before the destination is created or cleared. Run a decode with `-dryrun` to check the complete backup before using `-clear`; a later failure can still leave a partial restore, and the dry run does not protect against subsequent input changes or destination failures. Matching copies do not authenticate the data.
 - Restores wait for extraction and directory permission cleanup to finish, without a fixed completion timeout. Library callers can cancel through their context; cancellation stops further processing and waits for in-progress filesystem operations and cleanup, which may take time. A canceled restore can leave partial output.
 - Collection headers, PNG CRCs, and archive validation detect some damage and inconsistencies. They do not authenticate the restored contents or reliably detect deliberate alterations.
@@ -319,7 +311,7 @@ To mix your own random generator into every pad byte, add `-pad-stream PATH` whe
   - `-dryrun`: (Optional) Process the complete stream and report sizes without writing output files. Encoding counts frames before PNG/TAR overhead and reports the chunk alignment padding; these are not exact disk-space estimates.
   - `-pad-stream PATH` XORs one checked byte from a raw device, pipe, or file with each normal mixer byte. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
   - `-pad-skip N` discards a documented one-time header of N bytes from `-pad-stream` before checking and consuming the pad data. Defaults to zero.
-  - `-entropy-file PATH`, `-entropy-url URL`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
+  - `-entropy-file PATH`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
   - `-entropy-timeout DURATION`: (Optional, encode only) Limit each external source open/read; default `10s`.
 
 - **Decode:**
@@ -348,7 +340,7 @@ For encoding and decoding, input and output directories must be separate: neithe
 
 - **Source File Organization:**
   - **cmd/padlock/main.go:** The command-line interface entry point.
-  - **cmd/padlock/entropy.go:** Optional file/device/pipe and HTTPS entropy sources, with validation and timeouts.
+  - **cmd/padlock/entropy.go:** Local file, device, pipe, and stdin entropy sources, with validation and timeouts.
   - **pkg/padlock/padlock.go:** Coordinates the encoding and decoding processes, integrating the various components.
   - **pkg/file/:** Contains modules for file and directory operations:
     - **format.go:** Implementations for working with different file formats (BIN and PNG).

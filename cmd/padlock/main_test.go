@@ -5,12 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,16 +20,6 @@ import (
 // as they do in the installed executable, without terminating the test runner.
 func TestMain(m *testing.M) {
 	if os.Getenv("PADLOCK_CLI_TEST_HELPER") == "1" {
-		// Trust only the local test server's certificate for HTTPS CLI tests.
-		// This hook exists solely in the test binary; production uses OS roots.
-		if path := os.Getenv("PADLOCK_CLI_TEST_CA"); path != "" {
-			pem, err := os.ReadFile(path)
-			roots := x509.NewCertPool()
-			if err != nil || !roots.AppendCertsFromPEM(pem) {
-				panic("invalid test TLS root")
-			}
-			http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots}
-		}
 		main()
 		os.Exit(0)
 	}

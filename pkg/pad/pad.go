@@ -17,8 +17,6 @@ package pad
 
 import (
 	"context"
-	crand "crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -290,15 +288,7 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 		return err
 	}
 
-	// Generate the public identifier from a separate OS draw on every encode.
-	// This keeps the header independent of the caller's pad stream.
-	var idSeed [32]byte
-	if _, err := crand.Read(idSeed[:]); err != nil {
-		return fmt.Errorf("generate backup identifier: %w", err)
-	}
-	digest := sha256.Sum256(idSeed[:])
-	clear(idSeed[:])
-	backupID := hex.EncodeToString(digest[:backupIDBytes])
+	backupID := newBackupID()
 
 	// Compute a size of input to process in each chunk, given the number of ciphers that must fit into the chunk
 	inputChunkBytes := p.InputChunkBytes(outputChunkBytes)

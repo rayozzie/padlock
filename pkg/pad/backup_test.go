@@ -75,6 +75,27 @@ func TestBackupIdentifierPerEncodeRun(t *testing.T) {
 	}
 }
 
+func TestConcurrentBackupIDs(t *testing.T) {
+	const count = 64
+	start := make(chan struct{})
+	ids := make(chan string, count)
+	for range count {
+		go func() {
+			<-start
+			ids <- newBackupID()
+		}()
+	}
+	close(start)
+	seen := make(map[string]bool)
+	for range count {
+		id := <-ids
+		if seen[id] {
+			t.Fatalf("concurrent encodes reused ID %s", id)
+		}
+		seen[id] = true
+	}
+}
+
 func TestDecodeRejectsMixedBackups(t *testing.T) {
 	ctx := context.Background()
 	const chunkBytes = 64
