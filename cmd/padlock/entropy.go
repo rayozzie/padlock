@@ -27,12 +27,20 @@ type entropySpec struct {
 }
 
 type entropyOptions struct {
-	specs   []entropySpec
-	timeout time.Duration
+	specs     []entropySpec
+	padStream string
+	timeout   time.Duration
 }
 
 func registerEntropyFlags(flags *flag.FlagSet) *entropyOptions {
 	opts := &entropyOptions{}
+	flags.Func("pad-stream", "read every pad byte directly from a raw file, device, or pipe ('-' for stdin, encode only)", func(value string) error {
+		if value == "" || opts.padStream != "" {
+			return fmt.Errorf("supply exactly one pad stream path or '-'")
+		}
+		opts.padStream = value
+		return nil
+	})
 	flags.Func("entropy-file", "additional seed bytes from file/device/pipe; '-' reads stdin (repeatable, encode only)", func(value string) error {
 		if value == "" {
 			return fmt.Errorf("entropy path must not be empty")
@@ -69,15 +77,22 @@ func newEntropyHTTPClient() *http.Client {
 	}
 }
 
-// prepare validates all selections before reading any seed bytes. Dry runs
+// prepare validates all selections before reading any source bytes. Dry runs
 // validate syntax but do not open files, read stdin, or contact URLs.
 func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []string, dryRun bool, stdin *os.File) ([]pad.RNG, func(), error) {
 	closeSources := func() {}
 	if o.timeout <= 0 {
 		return nil, closeSources, fmt.Errorf("entropy-timeout must be greater than zero")
 	}
+	specs := o.specs
+	if o.padStream != "" {
+		if len(specs) != 0 {
+			return nil, closeSources, fmt.Errorf("-pad-stream supplies the pads directly and cannot be combined with -entropy-file or -entropy-url")
+		}
+		specs = []entropySpec{{"pad stream", o.padStream}}
+	}
 	seen := make(map[string]bool)
-	for i, spec := range o.specs {
+	for i, spec := range specs {
 		key := spec.kind + ":" + spec.value
 		if spec.kind == "https" {
 			u, err := entropyURL(spec.value)
@@ -92,7 +107,7 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		}
 		seen[key] = true
 	}
-	if dryRun || len(o.specs) == 0 {
+	if dryRun || len(specs) == 0 {
 		return nil, closeSources, nil
 	}
 
@@ -110,7 +125,7 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 		closeSources()
 		return nil, func() {}, err
 	}
-	for i, spec := range o.specs {
+	for i, spec := range specs {
 		name := fmt.Sprintf("entropy source %d (%s)", i+1, spec.kind)
 		if spec.kind == "https" {
 			sources = append(sources, &httpEntropySource{name: name, address: spec.value, timeout: o.timeout, client: client})
@@ -257,6 +272,7 @@ func (s *fileEntropySource) Read(ctx context.Context, p []byte) error {
 	// reports cancellation before this goroutine selects ctx.Done(). A worker
 	// in a non-interruptible OS read retains only its own private buffer.
 	s.file.Close()
+	s.failed = fmt.Errorf("%s could not supply %d bytes: %w", s.name, len(p), s.failed)
 	return s.failed
 }
 

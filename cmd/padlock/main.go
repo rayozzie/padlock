@@ -16,7 +16,7 @@ import (
 )
 
 // usage prints the command-line help information and exits.
-func usage() {
+func usage(exitCode int) {
 	fmt.Fprintf(os.Stderr, `Usage:
   padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-files]
   padlock encode <inputDir> <outputDir1> <outputDir2> ... <outputDirN> [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-files]
@@ -49,36 +49,51 @@ Options:
   -verbose          Enable detailed debug output
   -files            Create individual files for each collection instead of tar archives (default: creates tar archives)
   -dryrun           Calculate and display size information without actually writing output files
+  -pad-stream PATH  Read every pad byte directly from a raw device, pipe, or single-use file
+                    Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
+                    Supply fresh, private bytes on every encode. A short read stops the backup
+                    Encode only. Incompatible with the seed options -entropy-file and -entropy-url
   -entropy-file PATH  Additional seed bytes from a file, device, or pipe; '-' reads stdin
                     Repeatable; encode only. Keep outside input/output directories; never reuse bytes
   -entropy-url URL  Additional seed bytes from HTTPS application/octet-stream (repeatable; encode only)
   -entropy-timeout DURATION  Time limit per external source open/read (default: 10s)
                     Dry runs do not read external sources. Decode does not need them
+
+Full-stream example:
+  padlock encode ./input ./collections -copies 3 -required 2 -pad-stream /path/to/qrng
 `)
-	os.Exit(1)
+	os.Exit(exitCode)
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		usage(1)
 	}
 
 	cmd := os.Args[1]
+	if len(os.Args) == 3 && (cmd == "encode" || cmd == "decode") {
+		switch os.Args[2] {
+		case "-h", "-help", "--help":
+			usage(0)
+		}
+	}
 
 	switch cmd {
 	case "encode":
 		handleEncode()
 	case "decode":
 		handleDecode()
+	case "help", "-h", "-help", "--help":
+		usage(0)
 	default:
-		usage()
+		usage(1)
 	}
 }
 
 // handleEncode handles the encode command
 func handleEncode() {
 	if len(os.Args) < 3 {
-		usage()
+		usage(1)
 	}
 
 	inputDir := os.Args[2]
@@ -132,7 +147,7 @@ func handleEncode() {
 
 		// If not in dry run mode and no output directory, show usage
 		if !foundDryRunFlag {
-			usage()
+			usage(1)
 		}
 	}
 
@@ -231,7 +246,7 @@ func handleEncode() {
 
 	cfg := padlock.EncodeConfig{
 		InputDir:           inputDir,
-		OutputDir:          "", // Will be set below if not in size mode
+		OutputDir:          "",  // Will be set below if not in size mode
 		OutputDirs:         nil, // Will be set below if not in size mode
 		N:                  *nVal,
 		K:                  *reqVal,
@@ -257,22 +272,26 @@ func handleEncode() {
 		log.Fatalf("Error: At least one output directory must be specified")
 	}
 
-	// Initialize all selected sources before EncodeDirectory can clear outputs.
+	// Open selected sources and initialize software seeds before preparing outputs.
 	sources, closeEntropy, err := entropy.prepare(ctx, inputDir, outputDirs, cfg.SizeOnly, os.Stdin)
 	if err != nil {
 		log.Fatalf("entropy setup failed: %v", err)
 	}
 	defer closeEntropy()
-	if len(sources) == 0 {
+	switch {
+	case entropy.padStream != "" && !cfg.SizeOnly:
+		cfg.RNG = sources[0]
+		tracer.Infof("Reading every pad byte directly from the selected stream")
+	case len(sources) == 0:
 		cfg.RNG = pad.NewDefaultRand(ctx)
-	} else {
+	default:
 		cfg.RNG, err = pad.NewRandWithEntropy(ctx, sources...)
 		if err != nil {
 			closeEntropy()
 			log.Fatalf("entropy initialization failed: %v", err)
 		}
 	}
-	if cfg.SizeOnly && len(entropy.specs) > 0 {
+	if cfg.SizeOnly && (len(entropy.specs) > 0 || entropy.padStream != "") {
 		tracer.Infof("Dry run: external entropy sources are not opened or consumed")
 	}
 
@@ -286,7 +305,7 @@ func handleEncode() {
 // handleDecode handles the decode command
 func handleDecode() {
 	if len(os.Args) < 3 {
-		usage()
+		usage(1)
 	}
 
 	// First find where the flags start (if any)
@@ -328,7 +347,7 @@ func handleDecode() {
 
 	// Need at least input directories
 	if len(args) < 1 {
-		usage()
+		usage(1)
 	}
 
 	// Need at least one input directory
@@ -347,7 +366,7 @@ func handleDecode() {
 		inputDirs = args
 	} else {
 		// Not enough arguments
-		usage()
+		usage(1)
 	}
 
 	// Validate input directories

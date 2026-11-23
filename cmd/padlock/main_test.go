@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -40,6 +41,11 @@ func TestMain(m *testing.M) {
 
 func runCLI(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return runCLIWithStdin(t, nil, args...)
+}
+
+func runCLIWithStdin(t *testing.T, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +53,7 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Stdin = stdin
 	cmd.Env = append(os.Environ(), "PADLOCK_CLI_TEST_HELPER=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {

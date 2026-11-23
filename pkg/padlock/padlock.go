@@ -663,7 +663,9 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 
 		log.Infof("Original input size:              %s bytes", FormatByteSize(sizeTracker.InputSize))
 
+		streamBytes := sizeTracker.InputSize
 		if cfg.Compression == CompressionGzip && sizeTracker.CompressedInputSize > 0 {
+			streamBytes = sizeTracker.CompressedInputSize
 			log.Infof("Compressed input size:            %s bytes", FormatByteSize(sizeTracker.CompressedInputSize))
 
 			// Calculate compression ratio
@@ -674,6 +676,8 @@ func EncodeDirectory(ctx context.Context, cfg EncodeConfig) error {
 			log.Infof("Compression ratio:                %.2f%%", compressionRatio)
 		}
 		log.Infof("Chunk alignment padding:          %s bytes", FormatByteSize(padder.Padding()))
+		padBytes := (streamBytes + padder.Padding()) * int64(p.PadBytesPerInputByte())
+		log.Infof("Pad stream required:              %s bytes", FormatByteSize(padBytes))
 
 		if sizeTracker.EncodeCollectionsTotalSize > 0 {
 			// Calculate each collection size as an integer (all collections are same size)

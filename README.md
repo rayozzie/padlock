@@ -119,6 +119,35 @@ XOR preserves a secret uniform input when it is independent of the other inputs 
 
 The statistical generators remain in the mixture for algorithm diversity. Seeding them with OS random bytes does not make them secure on their own. Go documents this limitation for [math/rand](https://pkg.go.dev/math/rand) and [math/rand/v2](https://pkg.go.dev/math/rand/v2); [crypto/rand](https://pkg.go.dev/crypto/rand) documents the OS randomness interface.
 
+### Using a hardware random stream for every pad byte
+
+Use `-pad-stream PATH` to supply all pad bytes directly from a local hardware random generator, a pipe, or a single-use binary file. Each pad byte consumes one byte from that stream. The software pad generators are bypassed. The public backup identifier uses a separate OS random draw.
+
+First, check how many bytes your backup needs. This command reads the input directory and leaves the random source untouched.
+
+```bash
+padlock encode ./input -copies 3 -required 2 -dryrun
+```
+
+Find **Pad stream required** in the report. Then encode with the same input, threshold, and chunk size. On Linux, for example, if your chosen hardware generator provides `/dev/hwrng`:
+
+```bash
+padlock encode ./input ./collections -copies 3 -required 2 -pad-stream /dev/hwrng
+padlock decode ./collections ./restored
+```
+
+For a generator with a vendor utility, pipe its **raw binary output** into the encode command and use `-pad-stream -`. A private file of fresh device output works the same way as a device path. Keep it outside the input and output directories. Decoding only needs the collections.
+
+| Threshold for 1 GiB after compression and chunk padding | Random bytes required |
+|---|---:|
+| 2 of 2 | 1 GiB |
+| 2 of 3 | 3 GiB |
+| 3 of 5 | 20 GiB |
+
+Choose a device mode that extracts randomness continuously from physical measurements. Padlock accepts the bytes the device supplies and cannot verify their quality or secrecy. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. A retained copy of the pad stream can help decrypt the backup.
+
+If the device stalls, runs out, or reports an error, encoding stops. Use `-entropy-timeout 60s` if a slow device needs longer than the default 10 seconds for a read. An interrupted encode can leave a partial backup, so use a fresh output directory. The seed options below apply only to the software generator.
+
 ### Optional External Entropy
 
 Encoding can supplement the OS source with one or more sources of your choosing:
@@ -247,6 +276,8 @@ as the decode input. Keep collections on storage locations appropriate to your
 recovery and access requirements. Current collection containers are TAR; ZIP
 containers are not decoded directly.
 
+To supply every pad byte from your own random generator, add `-pad-stream PATH` when encoding. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
+
 ### Command-Line Usage
 
 - **Encode:**
@@ -266,6 +297,7 @@ containers are not decoded directly.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
   - `-files`: (Optional) Creates individual files for each collection instead of TAR archives.
   - `-dryrun`: (Optional) Process the complete stream and report sizes without writing output files. Encoding counts frames before PNG/TAR overhead and reports the chunk alignment padding; these are not exact disk-space estimates.
+  - `-pad-stream PATH` reads every pad byte from a single raw device, pipe, or file. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
   - `-entropy-file PATH`, `-entropy-url URL`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
   - `-entropy-timeout DURATION`: (Optional, encode only) Limit each external source open/read; default `10s`.
 
