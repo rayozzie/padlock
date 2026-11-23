@@ -211,7 +211,7 @@ A holder of fewer than K collections can see the threshold parameters, the publi
 
 ### Building from Source
 
-Install Git and Go 1.27.3 or later; use a supported Go release with current security
+Install Git and Go 1.27.4 or later; use a supported Go release with current security
 patches. Then clone the repository and build from its root:
 
 ```bash
