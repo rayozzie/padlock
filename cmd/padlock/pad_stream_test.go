@@ -26,6 +26,8 @@ func TestPadStreamCLI(t *testing.T) {
 			input, outputs, original := cliFixture(t, 1)
 			path := filepath.Join(t.TempDir(), "pad.bin")
 			options := []string{"-copies", tc.copies, "-required", tc.required, "-chunk", "96", "-files", "-format", "bin"}
+			header := []byte("device header v1")
+			options = append(options, "-pad-skip", fmt.Sprintf("%03d", len(header)))
 			dryArgs := append([]string{"encode", input, "-dryrun", "-pad-stream", path}, options...)
 			report, err := runCLI(t, dryArgs...)
 			match := regexp.MustCompile(`Pad stream required:\s+([\d,]+) bytes`).FindStringSubmatch(report)
@@ -40,10 +42,11 @@ func TestPadStreamCLI(t *testing.T) {
 			for i := range stream {
 				stream[i] = byte(i % 251)
 			}
+			deviceOutput := append(header, stream...)
 
 			// Truncation on the very last pad byte must fail, even across chunks.
 			shortArgs := append([]string{"encode", input, filepath.Join(t.TempDir(), "short"), "-pad-stream", "-"}, options...)
-			out, err := runCLIWithStdin(t, bytes.NewReader(stream[:count-1]), shortArgs...)
+			out, err := runCLIWithStdin(t, bytes.NewReader(deviceOutput[:len(deviceOutput)-1]), shortArgs...)
 			if err == nil || !strings.Contains(out, "EOF") || strings.Contains(out, "Encode complete") {
 				t.Fatalf("short pad stream: %v\n%s", err, out)
 			}
@@ -52,8 +55,8 @@ func TestPadStreamCLI(t *testing.T) {
 			var stdin io.Reader
 			if tc.stdin {
 				source = "-"
-				stdin = bytes.NewReader(stream)
-			} else if err := os.WriteFile(path, stream, 0600); err != nil {
+				stdin = bytes.NewReader(deviceOutput)
+			} else if err := os.WriteFile(path, deviceOutput, 0600); err != nil {
 				t.Fatal(err)
 			}
 			args := append([]string{"encode", input, outputs[0], "-pad-stream", source}, options...)
@@ -101,6 +104,9 @@ func TestPadStreamRejectsUnsafeInputsCLI(t *testing.T) {
 		{[]string{"-entropy-url", "https://example.org", "-pad-stream", "-", "-dryrun"}, "cannot be combined"},
 		{[]string{"-pad-stream", "-", "-pad-stream", "-"}, "exactly one"},
 		{[]string{"-pad-stream="}, "exactly one"},
+		{[]string{"-pad-stream", "-", "-pad-skip", "-1"}, "nonnegative"},
+		{[]string{"-pad-skip", "8", "-dryrun"}, "requires -pad-stream"},
+		{[]string{"-pad-stream", "-", "extra", "-pad-skip", "64"}, "unexpected argument"},
 	} {
 		out, err := runCLI(t, append([]string{"encode", input, outputs[0]}, tc.flags...)...)
 		if err == nil || !strings.Contains(out, tc.want) {

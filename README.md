@@ -146,6 +146,24 @@ For a generator with a vendor utility, pipe its **raw binary output** into the e
 
 Choose a device mode that extracts randomness continuously from physical measurements. Padlock accepts the bytes the device supplies and cannot verify their quality or secrecy. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. A retained copy of the pad stream can help decrypt the backup.
 
+**Headers.** A predictable header used as pad material can reveal the bytes it masks. Use the device's documented raw binary output. If its format has **one fixed header** followed by random bytes, discard exactly the documented length. For example, for a 64-byte header:
+
+```bash
+padlock encode ./input ./collections -pad-stream ./fresh-device-output.bin -pad-skip 64
+```
+
+Supply 64 extra bytes beyond **Pad stream required** in this example. The skip happens once per encode, including for stdin. A documented upper bound also works if everything after the header is random: skipping a few extra random bytes is safe. Padlock checks the start of the remaining payload for common signatures, including PNG, ZIP, gzip, PDF and HTTP/1, before preparing the output directory. It cannot infer an unknown header length or recognize an arbitrary public string. For a header of unknown maximum length, repeated packet framing, or text encodings such as JSON or hex, use the device's parser to extract the binary payload.
+
+**Rolling health checks** run automatically on the usable pad bytes, across reads and backup chunks. Encoding stops on any of these conditions:
+
+| Failure | Cutoff |
+|---|---|
+| Repetition | 13 consecutive copies of the same byte |
+| Byte concentration | Any byte occurs at least 36 times within the most recent 512 bytes, including the initial partial window |
+| Bit imbalance | A full 512-byte window contains 1,680 or fewer one bits, or 2,416 or more, out of 4,096 |
+
+Padlock checks the actual bytes before writing the affected chunk. An error identifies the failed test without printing pad bytes. Discard partial collections and investigate the source before retrying with fresh material. For 1 TiB of independent, uniformly random bytes, the chance of a false alarm from the three rolling tests is below 2 in 10¹⁷. The separate header check can also reject a chance signature match. A predictable or replayed stream can pass, and a successful run tells an observer that the rejected patterns were absent. These application-level checks supplement the generator's own noise-source health tests. [NIST SP 800-90B, section 4](https://doi.org/10.6028/NIST.SP.800-90B)
+
 If the device stalls, runs out, or reports an error, encoding stops. Use `-entropy-timeout 60s` if a slow device needs longer than the default 10 seconds for a read. An interrupted encode can leave a partial backup, so use a fresh output directory. The seed options below apply only to the software generator.
 
 ### Optional External Entropy
@@ -298,6 +316,7 @@ To supply every pad byte from your own random generator, add `-pad-stream PATH` 
   - `-files`: (Optional) Creates individual files for each collection instead of TAR archives.
   - `-dryrun`: (Optional) Process the complete stream and report sizes without writing output files. Encoding counts frames before PNG/TAR overhead and reports the chunk alignment padding; these are not exact disk-space estimates.
   - `-pad-stream PATH` reads every pad byte from a single raw device, pipe, or file. Use `-` for stdin. Run `-dryrun` to size the stream. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
+  - `-pad-skip N` discards a documented one-time header of N bytes from `-pad-stream` before checking and consuming the pad data. Defaults to zero.
   - `-entropy-file PATH`, `-entropy-url URL`: (Optional, repeatable, encode only) Supplement seed material with external raw bytes; see [Optional External Entropy](#optional-external-entropy).
   - `-entropy-timeout DURATION`: (Optional, encode only) Limit each external source open/read; default `10s`.
 

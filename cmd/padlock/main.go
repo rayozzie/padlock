@@ -52,7 +52,10 @@ Options:
   -pad-stream PATH  Read every pad byte directly from a raw device, pipe, or single-use file
                     Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
                     Supply fresh, private bytes on every encode. A short read stops the backup
+                    Recognized headers and failed rolling health checks stop encoding
                     Encode only. Incompatible with the seed options -entropy-file and -entropy-url
+  -pad-skip N       Discard N documented header bytes once, before the pad data (default: 0)
+                    Supply these extra bytes in addition to the dry-run pad count
   -entropy-file PATH  Additional seed bytes from a file, device, or pipe; '-' reads stdin
                     Repeatable; encode only. Keep outside input/output directories; never reuse bytes
   -entropy-url URL  Additional seed bytes from HTTPS application/octet-stream (repeatable; encode only)
@@ -160,6 +163,9 @@ func handleEncode() {
 	// Parse flags if there are any
 	if flagsStartIndex < len(os.Args) {
 		fs.Parse(os.Args[flagsStartIndex:])
+		if fs.NArg() != 0 {
+			log.Fatal("unexpected argument after encode flags; place directories before flags and give each option its documented arguments")
+		}
 	}
 
 	// Explicit default values must not be mistaken for omitted flags.
@@ -293,6 +299,9 @@ func handleEncode() {
 	}
 	if cfg.SizeOnly && (len(entropy.specs) > 0 || entropy.padStream != "") {
 		tracer.Infof("Dry run: external entropy sources are not opened or consumed")
+		if entropy.padSkip > 0 {
+			tracer.Infof("Add %d header bytes to the pad stream required in the size report", entropy.padSkip)
+		}
 	}
 
 	// Encode the directory

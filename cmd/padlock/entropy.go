@@ -29,11 +29,20 @@ type entropySpec struct {
 type entropyOptions struct {
 	specs     []entropySpec
 	padStream string
+	padSkip   int64
 	timeout   time.Duration
 }
 
 func registerEntropyFlags(flags *flag.FlagSet) *entropyOptions {
 	opts := &entropyOptions{}
+	flags.Func("pad-skip", "discard this many documented header bytes once before reading the pad stream (decimal)", func(value string) error {
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("supply a nonnegative decimal byte count")
+		}
+		opts.padSkip = n
+		return nil
+	})
 	flags.Func("pad-stream", "read every pad byte directly from a raw file, device, or pipe ('-' for stdin, encode only)", func(value string) error {
 		if value == "" || opts.padStream != "" {
 			return fmt.Errorf("supply exactly one pad stream path or '-'")
@@ -84,6 +93,9 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	if o.timeout <= 0 {
 		return nil, closeSources, fmt.Errorf("entropy-timeout must be greater than zero")
 	}
+	if o.padSkip != 0 && o.padStream == "" {
+		return nil, closeSources, fmt.Errorf("-pad-skip requires -pad-stream")
+	}
 	specs := o.specs
 	if o.padStream != "" {
 		if len(specs) != 0 {
@@ -114,10 +126,14 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 	var sources []pad.RNG
 	var files []*os.File
 	var infos []os.FileInfo
+	var stream *fileEntropySource
 	client := newEntropyHTTPClient()
 	closeSources = func() {
 		for _, f := range files {
 			f.Close()
+		}
+		if stream != nil && stream.checked != nil {
+			stream.checked.clear()
 		}
 		client.CloseIdleConnections()
 	}
@@ -153,7 +169,11 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 			}
 		}
 		infos = append(infos, info)
-		sources = append(sources, &fileEntropySource{name: name, file: f, timeout: o.timeout})
+		source := &fileEntropySource{name: name, file: f, timeout: o.timeout}
+		if spec.kind == "pad stream" {
+			stream = source
+		}
+		sources = append(sources, source)
 	}
 	// Checking identities also catches hard links, symlinks to files outside the
 	// archive, and differently spelled paths. Do not archive or clear seed inputs.
@@ -162,6 +182,11 @@ func (o *entropyOptions) prepare(ctx context.Context, input string, outputs []st
 			if err := checkEntropyOutsideDirectory(root, infos); err != nil {
 				return fail(err)
 			}
+		}
+	}
+	if stream != nil {
+		if err := stream.startPadStream(ctx, o.padSkip); err != nil {
+			return fail(err)
 		}
 	}
 	return sources, closeSources, nil
@@ -224,6 +249,7 @@ func openEntropyWithTimeout(ctx context.Context, path string, timeout time.Durat
 type fileEntropySource struct {
 	name    string
 	file    *os.File
+	checked *padStreamReader
 	timeout time.Duration
 	mu      sync.Mutex
 	failed  error
@@ -245,7 +271,11 @@ func (s *fileEntropySource) Read(ctx context.Context, p []byte) error {
 	buf := make([]byte, len(p))
 	done := make(chan error)
 	go func() {
-		err := readFullEntropyFile(ctx, s.file, buf)
+		var r io.Reader = s.file
+		if s.checked != nil {
+			r = s.checked
+		}
+		err := readFullEntropyFile(ctx, r, buf)
 		select {
 		case done <- err:
 		case <-ctx.Done():
