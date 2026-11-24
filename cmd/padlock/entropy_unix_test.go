@@ -219,7 +219,7 @@ func TestEntropyFileRetryErrors(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			got := make([]byte, 3)
-			err := readFullEntropyFile(ctx, reader, got)
+			err := readFullEntropyFile(ctx, reader, got, nil)
 			if !errors.Is(err, tc.want) || calls != 3 {
 				t.Fatalf("got %v after %d reads; want %v after 3", err, calls, tc.want)
 			}
@@ -227,6 +227,19 @@ func TestEntropyFileRetryErrors(t *testing.T) {
 				t.Fatalf("lost partial progress across retries: %v", got)
 			}
 		})
+	}
+}
+
+// A device can report an error alongside the last requested byte.
+func TestEntropyFileFinalReadError(t *testing.T) {
+	for _, end := range []error{io.EOF, syscall.EIO} {
+		reader := entropyReadFunc(func(p []byte) (int, error) {
+			return copy(p, []byte{1}), end
+		})
+		err := readFullEntropyFile(context.Background(), reader, make([]byte, 1), nil)
+		if end == io.EOF && err != nil || end == syscall.EIO && !errors.Is(err, end) {
+			t.Fatalf("final byte with %v: got %v", end, err)
+		}
 	}
 }
 
@@ -239,7 +252,7 @@ func TestEntropyFileRetryDeadlineDoesNotReset(t *testing.T) {
 		p[0] = byte(calls)
 		return 1, syscall.EAGAIN // Constant partial progress, never a complete seed.
 	})
-	err := readFullEntropyFile(ctx, reader, make([]byte, 1000))
+	err := readFullEntropyFile(ctx, reader, make([]byte, 1000), nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("partial progress reset the deadline: %v", err)
 	}
@@ -340,5 +353,32 @@ func TestEntropyFIFOTimeoutPreservesOutputCLI(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(outputs[0]); err != nil || len(entries) != 1 {
 		t.Fatalf("entropy timeout wrote output: %v, %v", entries, err)
+	}
+}
+
+func TestPadStreamRejectsOSRandomDevice(t *testing.T) {
+	input, outputs, _ := cliFixture(t, 1)
+	for _, device := range []string{"/dev/urandom", "/dev/random"} {
+		f, err := os.Open(device)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		alias := filepath.Join(t.TempDir(), "alias")
+		if err := os.Symlink(device, alias); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{device, alias, "-"} {
+			out, err := runCLIWithStdin(t, f, "encode", input, outputs[0], "-pad-stream", path)
+			if err == nil || !strings.Contains(out, "OS random generator already in the mixer") {
+				t.Fatalf("%s via %s: %v\n%s", device, path, err, out)
+			}
+			if _, err := os.Stat(outputs[0]); !os.IsNotExist(err) {
+				t.Fatalf("%s: output was created", path)
+			}
+		}
 	}
 }

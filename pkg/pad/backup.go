@@ -5,11 +5,37 @@ package pad
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"io"
+	"os"
+	"sync/atomic"
+	"time"
 )
 
 const backupIDBytes = 16
+
+var (
+	backupIDStart    = time.Now()
+	backupIDSequence atomic.Uint64
+)
+
+// This public label detects accidental mixing. The counter distinguishes even
+// concurrent calls in one clock tick. The process ID, wall clock, and elapsed
+// time distinguish separate processes on a best-effort basis.
+func newBackupID() string {
+	now := time.Now()
+	var fields [32]byte
+	binary.BigEndian.PutUint64(fields[0:8], uint64(now.UnixNano()))
+	binary.BigEndian.PutUint64(fields[8:16], uint64(now.Sub(backupIDStart)))
+	binary.BigEndian.PutUint64(fields[16:24], uint64(os.Getpid()))
+	binary.BigEndian.PutUint64(fields[24:32], backupIDSequence.Add(1))
+	h := fnv.New128a()
+	h.Write(fields[:])
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // backupIdentity binds all supplied chunks to the first chunk's identifier,
 // including chunks from collections beyond the K selected for reconstruction.

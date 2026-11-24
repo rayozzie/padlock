@@ -20,3 +20,16 @@ func openEntropyFile(path string) (*os.File, error) {
 func entropyReadWouldBlock(err error) bool {
 	return errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK)
 }
+
+// Compare the opened descriptor so symlinks and redirected stdin are covered.
+func isOSRandomDevice(info os.FileInfo) bool {
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	for _, path := range []string{"/dev/random", "/dev/urandom"} {
+		if device, err := os.Stat(path); err == nil && os.SameFile(info, device) {
+			return true
+		}
+	}
+	return false
+}

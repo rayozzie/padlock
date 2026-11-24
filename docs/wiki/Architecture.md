@@ -35,7 +35,7 @@ The RNG component XORs output from five generators: `CryptoRand`, `MathRand`, `C
 
 By default, all five share the OS randomness source. Separate state and algorithms provide algorithm diversity, not independently supplied entropy. MathRand, PCG64, and MT19937 are statistical PRNGs, not security fallbacks. Any reported generator error stops mixing; it does not silently reduce the set of generators.
 
-The encode CLI can supplement seeds with repeatable file/device/pipe and HTTPS inputs. `pad.NewRandWithEntropy` XORs fresh contributions with OS seed bytes and retains the selected sources for later ChaCha20 reseeds. Sources are initialized before output clearing. See the [Security Model](Security-Model) for the independence assumption required by XOR mixing and the limits of seeded software generators.
+The encode CLI can supplement seeds with one or more local file, device, pipe, or stdin inputs. `pad.NewRandWithEntropy` XORs fresh contributions with OS seed bytes and retains the selected sources for later ChaCha20 reseeds. Sources are initialized before output clearing. See the [Security Model](Security-Model) for the independence assumption required by XOR mixing and the limits of seeded software generators.
 
 #### XOR Operations
 

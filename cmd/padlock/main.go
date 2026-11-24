@@ -16,7 +16,7 @@ import (
 )
 
 // usage prints the command-line help information and exits.
-func usage() {
+func usage(exitCode int) {
 	fmt.Fprintf(os.Stderr, `Usage:
   padlock encode <inputDir> <outputDir> [-copies N] [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-files]
   padlock encode <inputDir> <outputDir1> <outputDir2> ... <outputDirN> [-required REQUIRED] [-format bin|png] [-clear] [-chunk SIZE] [-verbose] [-files]
@@ -49,36 +49,55 @@ Options:
   -verbose          Enable detailed debug output
   -files            Create individual files for each collection instead of tar archives (default: creates tar archives)
   -dryrun           Calculate and display size information without actually writing output files
-  -entropy-file PATH  Additional seed bytes from a file, device, or pipe; '-' reads stdin
+  -pad-stream PATH  XOR one byte from a raw device, pipe, or file with each normal mixer byte
+                    Use '-' for stdin. Use -dryrun to see the exact number of bytes needed
+                    Supply fresh, private bytes on every encode. A short read stops the backup
+                    Up to 512 bytes are checked before clearing output. Checks continue while encoding
+                    Supply raw binary. Unix /dev/random and /dev/urandom are rejected
+                    Encode only. Optional -entropy-file inputs seed the normal mixer
+  -pad-skip N       Discard N documented header bytes once, before the pad data (default: 0)
+                    Supply these extra bytes in addition to the dry-run pad count
+  -entropy-file PATH  Additional seed bytes from a local file, device, or pipe; '-' reads stdin
                     Repeatable; encode only. Keep outside input/output directories; never reuse bytes
-  -entropy-url URL  Additional seed bytes from HTTPS application/octet-stream (repeatable; encode only)
-  -entropy-timeout DURATION  Time limit per external source open/read (default: 10s)
+  -entropy-timeout DURATION  Maximum pad stream idle time (default: 10s)
+                    Also limits each source open and each complete seed read
                     Dry runs do not read external sources. Decode does not need them
+
+Full-stream example:
+  padlock encode ./input ./collections -copies 3 -required 2 -pad-stream /path/to/qrng
 `)
-	os.Exit(1)
+	os.Exit(exitCode)
 }
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		usage(1)
 	}
 
 	cmd := os.Args[1]
+	if len(os.Args) == 3 && (cmd == "encode" || cmd == "decode") {
+		switch os.Args[2] {
+		case "-h", "-help", "--help":
+			usage(0)
+		}
+	}
 
 	switch cmd {
 	case "encode":
 		handleEncode()
 	case "decode":
 		handleDecode()
+	case "help", "-h", "-help", "--help":
+		usage(0)
 	default:
-		usage()
+		usage(1)
 	}
 }
 
 // handleEncode handles the encode command
 func handleEncode() {
 	if len(os.Args) < 3 {
-		usage()
+		usage(1)
 	}
 
 	inputDir := os.Args[2]
@@ -132,7 +151,7 @@ func handleEncode() {
 
 		// If not in dry run mode and no output directory, show usage
 		if !foundDryRunFlag {
-			usage()
+			usage(1)
 		}
 	}
 
@@ -145,6 +164,9 @@ func handleEncode() {
 	// Parse flags if there are any
 	if flagsStartIndex < len(os.Args) {
 		fs.Parse(os.Args[flagsStartIndex:])
+		if fs.NArg() != 0 {
+			log.Fatal("unexpected argument after encode flags; place directories before flags and give each option its documented arguments")
+		}
 	}
 
 	// Explicit default values must not be mistaken for omitted flags.
@@ -231,7 +253,7 @@ func handleEncode() {
 
 	cfg := padlock.EncodeConfig{
 		InputDir:           inputDir,
-		OutputDir:          "", // Will be set below if not in size mode
+		OutputDir:          "",  // Will be set below if not in size mode
 		OutputDirs:         nil, // Will be set below if not in size mode
 		N:                  *nVal,
 		K:                  *reqVal,
@@ -257,23 +279,21 @@ func handleEncode() {
 		log.Fatalf("Error: At least one output directory must be specified")
 	}
 
-	// Initialize all selected sources before EncodeDirectory can clear outputs.
-	sources, closeEntropy, err := entropy.prepare(ctx, inputDir, outputDirs, cfg.SizeOnly, os.Stdin)
+	// Open selected sources and initialize software seeds before preparing outputs.
+	rng, closeEntropy, err := entropy.prepare(ctx, cfg, os.Stdin)
 	if err != nil {
 		log.Fatalf("entropy setup failed: %v", err)
 	}
 	defer closeEntropy()
-	if len(sources) == 0 {
-		cfg.RNG = pad.NewDefaultRand(ctx)
-	} else {
-		cfg.RNG, err = pad.NewRandWithEntropy(ctx, sources...)
-		if err != nil {
-			closeEntropy()
-			log.Fatalf("entropy initialization failed: %v", err)
-		}
+	cfg.RNG = rng
+	if entropy.padStream != "" && !cfg.SizeOnly {
+		tracer.Infof("XORing one checked stream byte with the normal mixer for every pad byte")
 	}
-	if cfg.SizeOnly && len(entropy.specs) > 0 {
+	if cfg.SizeOnly && (len(entropy.seedFiles) > 0 || entropy.padStream != "") {
 		tracer.Infof("Dry run: external entropy sources are not opened or consumed")
+		if entropy.padSkip > 0 {
+			tracer.Infof("Add %d header bytes to the pad stream required in the size report", entropy.padSkip)
+		}
 	}
 
 	// Encode the directory
@@ -286,7 +306,7 @@ func handleEncode() {
 // handleDecode handles the decode command
 func handleDecode() {
 	if len(os.Args) < 3 {
-		usage()
+		usage(1)
 	}
 
 	// First find where the flags start (if any)
@@ -328,7 +348,7 @@ func handleDecode() {
 
 	// Need at least input directories
 	if len(args) < 1 {
-		usage()
+		usage(1)
 	}
 
 	// Need at least one input directory
@@ -347,7 +367,7 @@ func handleDecode() {
 		inputDirs = args
 	} else {
 		// Not enough arguments
-		usage()
+		usage(1)
 	}
 
 	// Validate input directories

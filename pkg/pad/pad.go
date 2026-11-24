@@ -17,8 +17,6 @@ package pad
 
 import (
 	"context"
-	crand "crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -290,18 +288,7 @@ func (p *Pad) Encode(ctx context.Context, outputChunkBytes int, input io.Reader,
 		return err
 	}
 
-	// Public metadata is derived from a separate OS draw through SHA-256, so
-	// the collections never contain raw generator output: pad bytes are always
-	// masked by the mixer, and the identifier is a one-way function of bytes
-	// that are never published. Generate it per Encode call, including when
-	// the Pad is reused.
-	var idSeed [32]byte
-	if _, err := crand.Read(idSeed[:]); err != nil {
-		return fmt.Errorf("generate backup identifier: %w", err)
-	}
-	digest := sha256.Sum256(idSeed[:])
-	clear(idSeed[:])
-	backupID := hex.EncodeToString(digest[:backupIDBytes])
+	backupID := newBackupID()
 
 	// Compute a size of input to process in each chunk, given the number of ciphers that must fit into the chunk
 	inputChunkBytes := p.InputChunkBytes(outputChunkBytes)
@@ -346,6 +333,11 @@ func (p *Pad) InputChunkBytes(outputChunkBytes int) int {
 		return 0
 	}
 	return outputChunkBytes / p.PermutationCount
+}
+
+// PadBytesPerInputByte counts the K-1 fresh pads for each K-collection combination.
+func (p *Pad) PadBytesPerInputByte() int {
+	return (p.RequiredCopies - 1) * combinationCount(p.TotalCopies, p.RequiredCopies)
 }
 
 // encodeOneChunk splits a data chunk across every K-collection combination.

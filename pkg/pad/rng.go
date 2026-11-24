@@ -145,6 +145,30 @@ func NewRandWithEntropy(ctx context.Context, sources ...RNG) (RNG, error) {
 	return rng, nil
 }
 
+// NewRandWithPadStream XORs a fresh byte from stream into each output byte of
+// the normal five-generator mixer. Only seedSources supplement software seeds.
+// The caller supplies independent sources and owns their lifetimes.
+func NewRandWithPadStream(ctx context.Context, stream RNG, seedSources ...RNG) (RNG, error) {
+	if stream == nil {
+		return nil, fmt.Errorf("missing full-length pad stream")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var mixer *MultiRNG
+	if len(seedSources) == 0 {
+		mixer = newDefaultRand(ctx, crand.Reader)
+	} else {
+		var err error
+		mixer, err = newRandWithEntropy(ctx, NewCryptoRand(), seedSources...)
+		if err != nil {
+			return nil, err
+		}
+	}
+	mixer.Sources = append([]RNG{stream}, mixer.Sources...)
+	return mixer, nil
+}
+
 func newRandWithEntropy(ctx context.Context, osSource RNG, sources ...RNG) (*MultiRNG, error) {
 	for i, source := range sources {
 		if source == nil {

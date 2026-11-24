@@ -48,9 +48,10 @@ padlock encode <inputDir> <outputDir> [options]
 - `-verbose`: Enable detailed debug output
 - `-files`: Create individual files for each collection instead of TAR archives (default: creates TAR archives)
 - `-dryrun`: Calculate and display size information without actually writing output files
+- `-pad-stream PATH` mixes one checked raw byte with every normal mixer byte. Use `-` for raw binary stdin and `-dryrun` to size the stream. Startup checks up to 512 bytes before clearing output. Unix OS random devices are rejected. [Hardware stream examples](../../README.md#using-a-hardware-random-stream-for-every-pad-byte)
+- `-pad-skip N` discards a known header of N bytes before checking the stream.
 - `-entropy-file PATH`: Additional raw seed bytes from a file/device/pipe; `-` reads stdin (repeatable, encode only)
-- `-entropy-url URL`: Additional seed bytes from fresh HTTPS `application/octet-stream` responses (repeatable, encode only)
-- `-entropy-timeout DURATION`: Time limit per external source open/read (default: `10s`, encode only)
+- `-entropy-timeout DURATION`: Maximum pad stream idle time and total time per source open or seed read (default `10s`, encode only)
 
 #### Examples
 
@@ -88,16 +89,7 @@ Read raw entropy bytes from an external producer through stdin:
 external-entropy-producer | padlock encode ./input ./collections -entropy-file -
 ```
 
-Select an HTTPS source as well as a local source:
-
-```bash
-padlock encode ./input ./collections \
-  -entropy-file /media/entropy/fresh-seed.bin \
-  -entropy-url 'https://your-entropy-service.example/raw' \
-  -entropy-timeout 10s
-```
-
-These are example source paths and a placeholder URL; provide your own trusted sources. Each source must supply 76 bytes initially and 44 more for every ChaCha20 reseed. The HTTPS endpoint must respond with fresh raw binary data, not a JSON or text API response. See the [complete source contract](../../README.md#optional-external-entropy).
+Repeat `-entropy-file` to include multiple local sources. Each source must supply 76 bytes initially and 44 more for every ChaCha20 reseed. [Complete source contract](../../README.md#optional-external-entropy)
 
 Selected sources are never silently omitted. Initial source failures leave existing outputs intact, including with `-clear`. Dry runs do not open or consume external sources. Decode does not need them. Regular files start at their beginning on each invocation: use new contents for every encoding run. Choosing additional inputs does not automatically prove their independence or secrecy; see the [Security Model](Security-Model).
 
@@ -240,4 +232,4 @@ Output directories must be separate: duplicate paths, aliases, and parent/child 
 - Duplicate copies are accepted only if every supplied copy agrees. Conflicting, incomplete, or unreadable copies cause failure even when other collections would meet the threshold. First-chunk duplicates are compared before destination preparation; use `-dryrun` to check the complete backup before `-clear`. A successful dry run cannot protect against subsequent input changes or destination failures. Backup identifiers, PNG payload CRCs, and archive checks detect some damage; they do not authenticate the data.
 - `-clear` removes existing output contents after applicable preflight checks. First headers and duplicate first-chunk payloads are checked before decode prepares its destination. A later read, storage, or validation failure can leave a cleared destination or partial restore; it does not roll back prior files.
 - Newly created output roots and parent directories use `0700` on macOS/Linux, including direct library restores. Existing directories keep their modes. Restored children use archived permission bits where supported; Windows uses filesystem ACLs. See the [README operational boundaries](../../README.md#operational-boundaries).
-- Preserve the original collection bytes. Normal operation is offline; optional entropy URLs are contacted only while encoding with those options. Decoding needs only the collections.
+- Preserve the original collection bytes. Padlock has no built-in network entropy source. Decoding needs only the collections.

@@ -5,11 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"net/http"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,16 +20,6 @@ import (
 // as they do in the installed executable, without terminating the test runner.
 func TestMain(m *testing.M) {
 	if os.Getenv("PADLOCK_CLI_TEST_HELPER") == "1" {
-		// Trust only the local test server's certificate for HTTPS CLI tests.
-		// This hook exists solely in the test binary; production uses OS roots.
-		if path := os.Getenv("PADLOCK_CLI_TEST_CA"); path != "" {
-			pem, err := os.ReadFile(path)
-			roots := x509.NewCertPool()
-			if err != nil || !roots.AppendCertsFromPEM(pem) {
-				panic("invalid test TLS root")
-			}
-			http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots}
-		}
 		main()
 		os.Exit(0)
 	}
@@ -40,6 +28,11 @@ func TestMain(m *testing.M) {
 
 func runCLI(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return runCLIWithStdin(t, nil, args...)
+}
+
+func runCLIWithStdin(t *testing.T, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +40,7 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable, args...)
+	cmd.Stdin = stdin
 	cmd.Env = append(os.Environ(), "PADLOCK_CLI_TEST_HELPER=1")
 	output, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
