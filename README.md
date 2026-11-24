@@ -1,6 +1,6 @@
 # Padlock: A secret-splitting utility for backups & border-crossings
 
-**Padlock** is a streaming K-of-N utility for splitting data across collections for backups and border-crossings. It combines random pads with data using XOR, then distributes the pieces so that any K intact collections from the same backup can recover the original content. The splitting operation uses XOR and combinatorial distribution; its confidentiality depends on the randomness used to generate the pads. See [Security](#security) for the assumptions and limitations of the default generator.
+**Padlock** splits a directory into N collections. Any K distinct, intact collections from the same backup can restore it. For example, a 2-of-3 backup stored in three separate locations can tolerate the loss of any one location. Protection with fewer than K collections depends on how the pads are generated. [Quick start](#quick-start) · [Security model](#security) · [Security review](#security-review)
 
 ## Download
 
@@ -55,6 +55,8 @@ they are not publisher signatures.
   - When K or more collections are combined, the original data can be reconstructed
   - The ideal scheme hides the data from fewer than K collections when all pads are uniform, independent, secret, and never reused; the default RNG does not establish these information-theoretic assumptions
 
+- **Local hardware randomness.** Supply fresh raw bytes from a device, pipe, stdin, or single-use file with `-pad-stream`. The encoder mixes one checked hardware byte into every pad byte. A dry run reports the exact stream length the input and threshold require. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
+
 - **Flexible Output Formats:**  
   Chunks use either of two formats inside the default TAR collections, or as individual files with `-files`:
   - **PNG Files:** Files are named using the pattern  
@@ -101,108 +103,92 @@ The default generator uses the operating system's random generator and seeded so
 
 ### Random Number Generation
 
-By default, `MultiRNG` XORs the output of five generators:
+For every pad byte, the local mixer XORs one byte from each of five generators. The OS supplies the direct contribution and seeds the other four. A failure of that shared source can affect the whole mixer.
 
-| Generator | How it obtains randomness | Role and limitations |
-|-----------|---------------------------|----------------------|
-| `CryptoRand` | Go's `crypto/rand` on every read | Uses the OS randomness source, which also supplies the other generators' seeds |
-| `MathRand` | A separate eight-byte seed from `crypto/rand.Reader` | Legacy `math/rand` reduces the seed to fewer than 2^31 initial states; a statistical PRNG, not a security fallback |
-| `ChaCha20Rand` | A separate 32-byte key and 12-byte nonce from `crypto/rand.Reader` | A seeded generator; obtains a fresh key and nonce before exceeding its 256 GiB stream limit |
-| `PCG64Rand` | Two 64-bit seed words from a separate 16-byte read of `crypto/rand.Reader` | Both words are random rather than time-based; still a statistical PRNG, not a security fallback |
-| `MT19937Rand` | A separate eight-byte seed from `crypto/rand.Reader` | Mersenne Twister, a statistical PRNG, not a security fallback |
+| Generator | Input and role |
+|---|---|
+| `CryptoRand` | Reads Go’s `crypto/rand` for every output buffer. |
+| `ChaCha20Rand` | Uses a 32-byte key and 12-byte nonce to generate pad material. It draws a fresh key and nonce before exceeding 256 GiB under one key and nonce. |
+| `MathRand` | Uses a separate eight-byte seed. Go’s `math/rand` seed mapping has fewer than 2³¹ initial states. |
+| `PCG64Rand` | Uses a 16-byte seed, read as two 64-bit words. |
+| `MT19937Rand` | Uses a separate eight-byte seed for Mersenne Twister. |
 
-Without external entropy options, these are **five generator algorithms sharing one OS randomness source**. Go's `crypto/rand` is the standard source for security-sensitive random bytes. Separate draws from a functioning OS RNG are intended to provide unpredictable values. The generators have separate state and consume separate seed bytes; their seeds are not deliberately reused.
+MathRand, PCG64, and MT19937 are statistical generators. The default mixer's computational protection relies on the OS generator and ChaCha20. Separate seed reads give the generators separate state, while their common OS dependency remains. [Go OS randomness](https://pkg.go.dev/crypto/rand) · [Go statistical generators](https://pkg.go.dev/math/rand/v2)
 
-The shared OS source is a common trust dependency. The OS may combine multiple entropy inputs internally; Padlock does not separately control or verify their independence. A compromised OS randomness source could affect both direct output and every seed. Separate reads of `/dev/urandom`, timestamps, process IDs, or hashing those values would not establish an independent source either. Padlock does not automatically collect hardware or process-specific entropy separately. External sources can be selected explicitly as described below.
-
-XOR preserves a secret uniform input when it is independent of the other inputs and the attacker's knowledge. Without that assumption, it is not automatically as strong as its strongest input: identical streams cancel because `X XOR X = 0`. The default mixture provides algorithm diversity, with no guarantee of surviving compromise of the shared source or host process.
-
-The statistical generators remain in the mixture for algorithm diversity. Seeding them with OS random bytes does not make them secure on their own. Go documents this limitation for [math/rand](https://pkg.go.dev/math/rand) and [math/rand/v2](https://pkg.go.dev/math/rand/v2); [crypto/rand](https://pkg.go.dev/crypto/rand) documents the OS randomness interface.
+ChaCha20 generates pad bytes during encoding. Restore reconstructs the archive by XORing collection pieces and requires only the collections. SHA-256 checksums verify the executable download. The public backup ID uses a noncryptographic checksum. [Visible metadata](#visible-metadata)
 
 ### Using a hardware random stream for every pad byte
 
-Use `-pad-stream PATH` to mix a local hardware random generator, pipe, or single-use binary file into every pad byte. Padlock first checks the incoming stream, then computes **pad byte = checked stream byte XOR normal mixer byte**. The normal mixer includes the direct OS random source and all four seeded software generators.
+`-pad-stream PATH` takes raw binary output from a local device, pipe, or single-use file. Use `-pad-stream -` for stdin. For every pad byte, Padlock computes **checked stream byte XOR local mixer byte**. The stream supplies one byte per pad byte and supplies none of the software seeds.
 
-If the local mixer becomes predictable, an independent, private hardware stream still contributes its full randomness. Where hardware bytes are predictable, secrecy depends on the OS generator and ChaCha20 in the independent local mixer. This reasoning requires independence: two identical streams cancel under XOR. Keep the hardware stream separate from any seed material supplied through `-entropy-file`.
-
-First, check how many bytes your backup needs. This command reads the input directory and leaves the random source untouched.
+First, size the stream for your input and threshold. A dry run reads the input directory without opening the entropy source.
 
 ```bash
 padlock encode ./input -copies 3 -required 2 -dryrun
 ```
 
-Find **Pad stream required** in the report. Then encode with the same input, threshold, and chunk size. On Linux, for example, if your chosen hardware generator provides `/dev/hwrng`:
+Find **Pad stream required** in the report. Encode with the same input, threshold, and chunk size. On Linux, if your hardware generator exposes raw output at `/dev/hwrng`, use the following commands.
 
 ```bash
 padlock encode ./input ./collections -copies 3 -required 2 -pad-stream /dev/hwrng
 padlock decode ./collections ./restored
 ```
 
-For a generator with a vendor utility, pipe its **raw binary output** into the encode command and use `-pad-stream -`. A private file of fresh device output works the same way as a device path. Keep it outside the input and output directories. Decoding only needs the collections.
-
-| Threshold for 1 GiB after compression and chunk padding | Random bytes required |
+| Threshold | Stream bytes for 1 GiB of compressed, chunk-padded archive |
 |---|---:|
 | 2 of 2 | 1 GiB |
 | 2 of 3 | 3 GiB |
 | 3 of 5 | 20 GiB |
 
-Choose a device mode that extracts randomness continuously from physical measurements. On Unix, Padlock rejects the OS random devices `/dev/random` and `/dev/urandom` as pad streams, including symlinks or stdin redirected from them. A pipe, file, or virtual device can still share the OS generator’s origin. Verify the source of your bytes. Protect the stream and use fresh bytes for **every attempt**, including retries. Opening a regular file starts at byte zero each time. Anyone who retains the stream knows its contribution to the XOR.
+**Choosing the source.** XOR preserves a secret, uniform contribution when it is independent of the other contributions and of the attacker’s knowledge. A fresh hardware stream with those properties protects pad bytes even if the local mixer becomes predictable. Where hardware bytes are known, protection depends on the OS generator and ChaCha20 in the independent local mixer. Identical streams cancel under XOR.
 
-**Headers.** A predictable header contributes no secret hardware randomness at those positions. Use the device's documented raw binary output. If its format has **one fixed header** followed by random bytes, discard exactly the documented length. For example, for a 64-byte header:
+Use a device mode that takes fresh physical measurements throughout the encode. Keep its output private and use fresh bytes for **every attempt**, including retries. A regular file starts at byte zero each time it is opened. Anyone who supplies, publishes, or records the stream knows its contribution. Keep the stream separate from seed files and outside the backup input and output directories.
+
+On Unix, Padlock rejects `/dev/random` and `/dev/urandom` as pad streams, including symlinks and stdin redirected from those devices. They share the OS generator used by the mixer. A file, pipe, or virtual device can have the same underlying source. Verify where its bytes originate.
+
+**Device headers.** Select raw binary mode. For one fixed header with a documented length, supply that length via `-pad-skip`. For example, this command skips a 64-byte header once and uses the remaining payload.
 
 ```bash
 padlock encode ./input ./collections -pad-stream ./fresh-device-output.bin -pad-skip 64
 ```
 
-Supply 64 extra bytes beyond **Pad stream required** in this example. The skip happens once per encode, including for stdin. A documented upper bound also works if everything after the header is random: skipping a few extra random bytes is safe. Padlock checks the start of the remaining payload for common signatures, including PNG, ZIP, gzip, PDF and HTTP/1, before preparing the output directory. It cannot infer an unknown header length or recognize an arbitrary public string. For a header of unknown maximum length, repeated packet framing, or text encodings such as JSON or hex, use the device's parser to extract the binary payload.
+Budget 64 extra bytes beyond **Pad stream required** for this example. A documented upper bound also works when all subsequent bytes are random. After the skip, Padlock checks the first eight bytes for common file and protocol signatures, including PNG, ZIP, gzip, PDF, and HTTP/1. For unknown-length headers, repeated packet framing, or text such as Base64, hex, or JSON, use the device’s parser to extract the raw payload.
 
-Before creating or clearing output, Padlock health-checks up to 512 usable bytes. With a small chunk size it can check fewer, bounded by the pad bytes the backup is guaranteed to need. Those bytes count toward the dry-run total and enter the mixer exactly once. **Rolling health checks** then continue across reads and backup chunks. Encoding stops on any of these conditions:
+**Startup and rolling health checks.** Before creating or clearing output, Padlock checks up to 512 usable stream bytes, limited to the pad volume the backup is guaranteed to need. They count toward the dry-run total and enter the mixer exactly once. Checks continue on the incoming bytes, before XOR, across reads and backup chunks.
 
-| Failure | Cutoff |
+| Check | Encoding stops when |
 |---|---|
-| Repetition | 13 consecutive copies of the same byte |
-| Byte concentration | Any byte occurs at least 36 times within the most recent 512 bytes, including the initial partial window |
-| Bit imbalance | A full 512-byte window contains 1,680 or fewer one bits, or 2,416 or more, out of 4,096 |
-| Individual bit position | In a full 512-byte window, any of the eight bit positions is one in 120 or fewer bytes, or in 392 or more |
+| Repetition | 13 consecutive bytes have the same value. |
+| Byte concentration | Any value occurs at least 36 times in the last 512 bytes, including the initial partial window. |
+| Overall bit balance | A full 512-byte window contains at most 1,680 or at least 2,416 ones out of 4,096 bits. |
+| Individual bit positions | Any one of the eight bit positions is one in at most 120 or at least 392 bytes of a full window. |
 
-Padlock checks the actual bytes before writing the affected chunk. An error identifies the failed test without printing pad bytes. Discard partial collections and investigate the source before retrying with fresh material. For 1 TiB of independent, uniformly random bytes, the chance of a false alarm from the four rolling tests is below 2 in 10¹⁷. The separate header check can also reject a chance signature match. Base64 or ASCII text has a fixed high bit that fails the individual-position check by the first full window. A predictable or replayed binary stream can pass, and a successful run tells an observer that the rejected patterns were absent. These application-level checks supplement the generator's own noise-source health tests. [NIST SP 800-90B, section 4](https://doi.org/10.6028/NIST.SP.800-90B)
+The per-position check catches a stuck bit even when an opposite fault masks it in the overall count. For independent, uniform bytes, the four rolling checks together have a false-alarm probability below 2 in 10¹⁷ per TiB. The signature check can also reject an accidental match. Predictable or replayed binary data can pass these checks. A successful run tells an observer that the rejected patterns were absent. The hardware generator’s own noise-source tests remain important. [NIST SP 800-90B, section 4](https://doi.org/10.6028/NIST.SP.800-90B)
 
-If the device stalls, runs out, or reports an error, encoding stops. The default pad timeout is 10 seconds **without new bytes**, including while skipping a header. A slow device can take longer than that to fill a chunk as long as bytes keep arriving. Use `-entropy-timeout 60s` for a device that pauses longer between deliveries. After startup checks pass, `-clear` can replace existing output and a later failure can leave partial collections. Use a fresh output directory to preserve a previous backup. The seed options below apply only to the software generator.
+**Timeouts and failed checks.** The default timeout is 10 seconds **without new pad bytes**, including while skipping a header. A device that keeps delivering bytes can take longer to fill a chunk. Set `-entropy-timeout 60s` for a device that pauses longer between deliveries. A stall, exhausted source, read error, or failed health check stops encoding. Diagnostics identify the error without printing pad bytes.
+
+A startup failure leaves existing output intact. After startup, `-clear` can erase an existing backup. On a later failure, earlier chunks can already be on disk, including part of the window that triggered the health check. Discard the entire partial backup and retry with fresh stream bytes. Use a fresh output directory when you need to preserve an existing backup.
 
 ### Optional External Entropy
 
-Padlock has no built-in network entropy source. To supplement the OS seed, supply fresh, private bytes from a local source.
+Use `-entropy-file PATH` to supplement the software generators’ **seeds** with fresh local bytes. Repeat the option for multiple sources. Each source can be a file, device, named pipe, or stdin (`-`). Padlock reads these sources sequentially and has no built-in network entropy source.
 
 ```bash
 padlock encode ./input ./collections -copies 3 -required 2 \
-  -entropy-file /media/rng/fresh-seed.bin \
-  -entropy-timeout 10s
+  -entropy-file /media/rng/fresh-seed.bin
 ```
 
-- `-entropy-file PATH` reads raw bytes from a file, device, or named pipe. Use `-entropy-file -` to read a producer's raw bytes from stdin. Repeat the option to add another source. Padlock reads each source sequentially.
-- `-entropy-timeout DURATION` limits the total time for each source open and each seed read (default `10s`). A selected source's timeout, short read, exhaustion, or reported error stops encoding. Initial seeding completes before output directories can be cleared.
-- Dry runs check option syntax without reading any supplied source. Decoding requires only the collections.
+Each selected source supplies **76 bytes at startup**. Padlock XORs the contributions with 76 fresh OS bytes and assigns separate ranges to MathRand (8 bytes), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct OS generator also contributes to every pad byte. Each ChaCha20 reseed consumes **44 additional bytes from each seed source and the OS**. The 256 GiB reseed limit measures generated ChaCha20 output.
 
-At initialization, **each external seed source supplies 76 bytes**. Padlock XORs those bytes with 76 fresh OS bytes and contributions from every other selected seed source, then assigns separate ranges to MathRand (8), ChaCha20 (44), PCG64 (16), and MT19937 (8). The direct `CryptoRand` output provider remains active. Each later ChaCha20 reseed requires **44 additional fresh bytes from every seed source** and the OS, before its 256 GiB generated-stream limit is exceeded. That limit measures generated RNG output, not input file size. Using `-pad-stream` alongside these options adds one hardware byte per pad byte, with no extra hardware bytes consumed for seeding.
+You can combine `-entropy-file` and `-pad-stream` with separate sources. Independent, secret seed material can improve a software seed. A finite seed expanded by a PRNG provides computational protection. Use a full-length physical stream to contribute fresh hardware randomness at every byte. [Hardware stream sizing and use](#using-a-hardware-random-stream-for-every-pad-byte)
 
-Keep entropy files outside the backup input and output directories. Padlock rejects the same local file/device/pipe selected twice, including file aliases, and rejects entropy inputs also present in the input or output tree, including hard links. A new invocation opens a regular file at its beginning: supply a new file or fresh contents for every encoding run. Padlock does not modify seed files or track their reuse between runs. Named-pipe producers must be connected before a read begins. Each seed read must finish within `-entropy-timeout`, including time spent waiting between partial deliveries. An empty pipe with no producer fails rather than being retried indefinitely.
-
-#### What the Additional Sources Establish
-
-This option lets the operator add separately obtained seed material. When a contribution is uniform, secret from the attacker, and independent of the other contributions, XOR preserves that property in the combined seed. Choose sources with separate origins. Two paths to the same generator can deliver correlated bytes.
-
-A local file or pipe can still contain public or previously recorded bytes. To contribute private physical randomness to every pad byte, use fresh device output with `-pad-stream`. Anyone who supplied or retained those bytes knows their contribution.
-
-Additional seed sources improve diversity when chosen appropriately. They do not make MathRand, PCG64, or MT19937 secure generators, or turn finite seeds expanded by software into information-theoretic one-time pads. Padlock reports the number of additional sources used; it does not certify their independence, secrecy, or quality.
+Keep seed files outside the backup directories. Padlock checks file identities to reject duplicate inputs and hard links into the backup input or output tree. Supply fresh contents for each encode. Connect named-pipe producers before starting. `-entropy-timeout` limits each source open and each **complete seed read** to 10 seconds by default. A short read, timeout, or error stops encoding. Initial seeding completes before output clearing. Dry runs leave the sources untouched, and restore requires only the collections.
 
 ### Failures and Validation
 
-- Seed reads must fill the entire requested seed. Initialization stops if a complete seed cannot be obtained; it does not substitute a zero seed, a timestamp, or partial data. The optional-source CLI reports initialization errors normally; older standalone constructors panic on initialization errors. The OS RNG may terminate the process on failure.
-- If any generator returns an error during mixing, `MultiRNG` returns that error and leaves the caller's output buffer unchanged. It does not silently drop a failed generator.
-- A generator returning bytes successfully does not prove those bytes are unpredictable. Padlock cannot detect a compromised source that returns plausible bytes without reporting an error.
-- Development tests exercise generator behavior and sample statistics. Output writers do not certify randomness or issue byte-frequency quality warnings. Statistical tests cannot establish independence, secrecy, or resistance to prediction; deterministic generators can pass them.
-- Temporary seed and mixing buffers are cleared after use where the implementation owns them. Active generators retain the state they need. This cleanup does not guarantee erasure of all memory copies or protect a compromised process.
-- Generator locks protect concurrent access to their state. They do not isolate the generators from a compromised process or OS.
+- The encoder requires a complete read from every selected source. If any generator fails, the mixer returns the error before releasing bytes for that request. The encoder writes a chunk only after it obtains all of that chunk’s pads.
+- The CLI reports setup failures for external sources. The standalone generator constructors panic on an incomplete seed, and a fatal failure of Go’s OS random source can terminate the process.
+- Generator locks protect shared state during concurrent reads. Padlock clears temporary seed and mixing buffers it owns. Active generator state, runtime copies, and the encoding host remain within the trust boundary.
 
 ### Threshold Scheme and Its Assumptions
 
@@ -224,7 +210,9 @@ The generator is reused across chunks. New reads consume new output, but chunk b
 
 ### Visible Metadata
 
-A holder of fewer than K collections can see the threshold parameters, the public backup identifier, the chunk count, and the chunk headers. The archive is gzip-compressed before splitting, so its exact length would depend on its contents and could confirm a guess about them. Padlock therefore pads every encoded stream to a whole number of input chunks before splitting: every chunk header declares the full input chunk size, and sizes reveal only the compressed length rounded up to `-chunk` ÷ C(N-1, K-1) bytes (1 MiB for a default 2-of-3 backup). A backup smaller than one chunk reveals only that. Raising `-chunk` coarsens this at the cost of memory; the padding costs at most one chunk per collection. For a gzip stream the padding is an additional uncompressed gzip member that decompresses to zeros after the archive's end marker; restore and dry runs drain it, and earlier Padlock releases decode padded backups.
+Collection names and chunk headers expose K, N, the collection letter, the chunk count, and a public 128-bit backup ID. The ID helps detect accidentally mixed collections. Padlock computes it with FNV-1a over clock time, elapsed time, process ID, and a per-process counter. Treat those inputs as public. The label consumes zero random bytes, can be copied, and can repeat if its inputs coincide.
+
+Padlock pads the compressed archive to whole input chunks. With the default 2-of-3 settings, each input chunk holds 1 MiB, so file sizes reveal the number of these chunks. A larger `-chunk` makes the size information coarser and increases memory use. Gzip padding occupies its own member and can require additional whole chunks to fit its framing. An encode dry run reports the compressed length and the alignment padding separately.
 
 ### Operational Boundaries
 
@@ -232,7 +220,7 @@ A holder of fewer than K collections can see the threshold parameters, the publi
 - The encoding host keeps the plaintext. Padlock reads the input directory and leaves it in place; filesystem snapshots (Time Machine, APFS, Volume Shadow Copy), swap and hibernation files, search indexes, and terminal scrollback (encoding lists every file name at normal logging level) can retain copies after the input is deleted, and shell history retains the command line, including input and output paths. Encode on a host whose storage is encrypted or that you can wipe, and treat the source directory as sensitive until it has been deliberately removed.
 - Symbolic links inside the input are skipped, not followed. Encoding reports each one and ends with a warning giving the count; check it before relying on the backup, because the link targets are not in it.
 - Never reuse pad bytes for different data or restart generators from previously used state. The implementation requests fresh output for each pad but cannot certify its uniqueness or unpredictability.
-- Each encode labels every chunk with the same public 128-bit backup ID. The ID is a noncryptographic FNV-1a checksum of clock time, elapsed time, process ID, and a per-process counter. It consumes no pad bytes or other randomness. Anyone can copy the label, and processes with identical inputs can repeat it. Decode rejects different identifiers across any supplied collections, including extra collections beyond the required threshold. The first headers are checked before creating or clearing the destination; subsequent chunks are checked during decoding. Dry runs apply the same checks.
+- Restore checks the backup IDs in the first chunk headers before creating or clearing the destination, and checks subsequent headers during decoding. Every supplied collection must belong to the same backup, including extra collections and collections supplied in a dry run.
 - Restore requires K distinct collection letters. Additional copies of a collection are accepted only when their metadata and encoded payloads agree, checked chunk by chunk across every supplied copy. Conflicting, incomplete, or unreadable copies cause failure even when other collections meet the threshold. Duplicate first-chunk payloads are compared before the destination is created or cleared. Run a decode with `-dryrun` to check the complete backup before using `-clear`; a later failure can still leave a partial restore, and the dry run does not protect against subsequent input changes or destination failures. Matching copies do not authenticate the data.
 - Restores wait for extraction and directory permission cleanup to finish, without a fixed completion timeout. Library callers can cancel through their context; cancellation stops further processing and waits for in-progress filesystem operations and cleanup, which may take time. A canceled restore can leave partial output.
 - Collection headers, PNG CRCs, and archive validation detect some damage and inconsistencies. They do not authenticate the restored contents or reliably detect deliberate alterations.
@@ -286,8 +274,8 @@ padlock decode ./collections ./restored
 This creates `2A3.tar`, `2B3.tar`, and `2C3.tar`. For a recovery check using only
 two collections, place any two of those files in a separate directory and use it
 as the decode input. Keep collections on storage locations appropriate to your
-recovery and access requirements. Current collection containers are TAR; ZIP
-containers are not decoded directly.
+recovery and access requirements. Padlock reads collection TARs and loose collection directories. Extract a ZIP
+wrapper before passing its contents to the decoder.
 
 To mix your own random generator into every pad byte, add `-pad-stream PATH` when encoding. [Hardware stream examples](#using-a-hardware-random-stream-for-every-pad-byte)
 
@@ -306,7 +294,7 @@ To mix your own random generator into every pad byte, add `-pad-stream PATH` whe
   - `-required`: Minimum number of collections required for reconstruction, from 2 through `-copies`. It must be supplied whenever `-copies` is greater than 2 with one output directory; with multiple output directories it defaults to all of them. Missing or invalid values fail before outputs are created or cleared, including in dry runs.
   - `-format`: Output format, either "bin" or "png" (default: "png").
   - `-chunk`: Maximum encoded payload bytes per collection chunk, before headers and container overhead. The minimum is C(N-1, K-1): for example, 2 bytes for 2-of-3 or 6 bytes for 3-of-5. Invalid sizes are rejected before output directories are created or cleared, including with `-clear` or `-dryrun`. Every backup is padded to a whole number of input chunks (`-chunk` ÷ C(N-1, K-1) bytes each), so collection sizes reveal only the chunk count; see [Visible Metadata](#visible-metadata).
-  - `-clear`: (Optional) Clears the output directory before encoding.
+  - `-clear` authorizes clearing the specified output directories after startup checks. A later failure can leave a partial backup.
   - `-verbose`: (Optional) Enables detailed trace/debug messages.
   - `-files`: (Optional) Creates individual files for each collection instead of TAR archives.
   - `-dryrun`: (Optional) Process the complete stream and report sizes without writing output files. Encoding counts frames before PNG/TAR overhead and reports the chunk alignment padding; these are not exact disk-space estimates.
@@ -358,17 +346,22 @@ For encoding and decoding, input and output directories must be separate: neithe
   - **pkg/pad/rng.go:** XORs the five normal generators with the optional full-length pad stream. Separate external seed sources can supplement OS randomness at initialization and reseeding.
   - **pkg/trace/trace.go:** Context-based logging system for debug and trace information.
 
+## Security review
+
+Claude Mythos 5.2 reviewed the full-length pad stream on November 23, 2026. Its macOS ARM64 tests traced individual bytes from files and pipes into saved collections across five threshold configurations. Short reads, startup-probe boundaries, and forced ChaCha20 reseeds all preserved byte alignment. Each stored pad byte equaled one checked stream byte XOR one local mixer byte. Seed reads consumed zero pad-stream bytes. [Reviewed source](https://github.com/rayozzie/padlock/tree/7043347d7bf4ab922638c41762cbffa396a755a6)
+
+The review reported three medium and two low findings in the reviewed source, with no high or critical findings. The following safeguards and tests cover all five areas.
+
+| Review area | What Padlock checks |
+|---|---|
+| Slow producers | A stream that keeps delivering bytes can take longer than the idle timeout to fill a chunk. A stalled stream stops the encode. [Timeout tests](cmd/padlock/pad_stream_preflight_test.go) |
+| Existing backups | Startup health checks run before `-clear` touches the destination. A later failure can leave partial output. [Startup tests](cmd/padlock/pad_stream_preflight_test.go) |
+| Stuck bits and text input | Each bit position is checked over a rolling 512-byte window. This catches faults that can leave the total count of one bits balanced. [Health-check tests](cmd/padlock/pad_stream_health_test.go) |
+| Source independence | Unix device-identity checks reject `/dev/random` and `/dev/urandom`, including aliases and redirected stdin. The operator verifies the origin of any file, pipe, or virtual device. [Device tests](cmd/padlock/entropy_unix_test.go) |
+| Byte-for-byte mixing | Regression tests compare actual pad values across a ChaCha20 reseed and in saved collections. [Reseed test](pkg/pad/rng_pad_stream_value_test.go) · [Collection test](cmd/padlock/pad_stream_trace_test.go) |
+
+The review covered encoder source and controlled input streams. Physical entropy quality, host compromise, Windows behavior, packaged executables, and the restore path were outside its scope.
+
 ## License
 
 [MIT License](LICENSE)
-
-## Last Security Review
-
-October 26, 2026, by Claude (Mythos 5.1, `claude-mythos-5-1`) in Claude Code, focused on two threats: a holder of fewer than K collections recovering plaintext, and a user getting less protection than they assumed. Findings were addressed in [pull request #3](https://github.com/rayozzie/padlock/pull/3). This was a source review with mechanical checks, not a formal proof or a certified audit.
-
-- **Splitting (`pkg/pad`):** encoder and decoder were read and then checked by an independent brute-force harness for every K-of-N up to 8 (the repository's tests cover N=26). Every pad is fresh and used once, every K-subset reconstructs, and every XOR piece visible to fewer than K collections is masked by a pad they do not hold. The property is structural, was checked exhaustively, and the construction is standard replicated additive sharing.
-- **Randomness (`pkg/pad/rng*.go`):** the October review examined the direct OS contribution to every output byte and the use of external seed material at initialization and ChaCha20 reseeding. Its XOR argument assumes a secret, uniform contribution independent of the other inputs. The full-length `-pad-stream` option was added after that review.
-- **Decode and filesystem:** pads are fresh per run, so collections from different runs reveal nothing together and are rejected; duplicates never count toward K; restore is confined to the destination with exclusive creation and sparse-entry rejection; no plaintext or collection data is written to temporary files; no file contents or entropy credentials appear in logs or errors.
-- **Published binaries:** checksums verify, embedded revisions match clean commits, and the test suite and CI matrix pass.
-
-Not examined: the quality of any operating system's random generator (the documented assumption), host compromise and memory side channels, and authentication of restored contents, a documented non-goal.
